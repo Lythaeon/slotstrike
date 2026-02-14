@@ -1,0 +1,352 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build/publish (for example: v0.1.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref_name || github.event.inputs.tag || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-tag:
+    name: Resolve Tag
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      clean_version: ${{ steps.resolve.outputs.clean_version }}
+      base_version: ${{ steps.resolve.outputs.base_version }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${TAG}" || "${TAG}" != v* ]]; then
+            echo "Release tag must start with 'v'. Got: '${TAG}'"
+            exit 1
+          fi
+
+          CLEAN_VERSION="${TAG#v}"
+          BASE_VERSION="${CLEAN_VERSION%%-*}"
+          if [[ "${CLEAN_VERSION}" == *"-"* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+
+          echo "release_tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "clean_version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "base_version=${BASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "${GITHUB_OUTPUT}"
+
+  validate:
+    name: Validate Release
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_OFFLINE: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install cargo-make
+        uses: davidB/rust-cargo-make@v1
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Verify Tag Matches Cargo.toml Version
+        shell: bash
+        run: |
+          VERSION_CLEAN="${{ needs.resolve-tag.outputs.clean_version }}"
+          VERSION_BASE="${{ needs.resolve-tag.outputs.base_version }}"
+          IS_PRERELEASE="${{ needs.resolve-tag.outputs.is_prerelease }}"
+
+          TOML_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "${TOML_VERSION}" ]]; then
+            echo "Failed to read Cargo.toml version."
+            exit 1
+          fi
+
+          EXPECT_VERSION="${VERSION_CLEAN}"
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            EXPECT_VERSION="${VERSION_BASE}"
+          fi
+
+          if [[ "${TOML_VERSION}" != "${EXPECT_VERSION}" ]]; then
+            echo "Tag version (${VERSION_CLEAN}) does not match Cargo.toml (${TOML_VERSION})."
+            exit 1
+          fi
+
+      - name: Verify Changelog Section (if CHANGELOG.md exists)
+        shell: bash
+        run: |
+          BASE_VERSION="${{ needs.resolve-tag.outputs.base_version }}"
+          if [[ -f CHANGELOG.md ]]; then
+            if ! grep -qE "^##[[:space:]]+${BASE_VERSION}$" CHANGELOG.md; then
+              echo "Missing CHANGELOG.md section for ${BASE_VERSION}."
+              exit 1
+            fi
+          else
+            echo "CHANGELOG.md not found. Skipping changelog section validation."
+          fi
+
+      - name: Release Tag Info
+        shell: bash
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.release_tag }}"
+          IS_PRERELEASE="${{ needs.resolve-tag.outputs.is_prerelease }}"
+          BASE_VERSION="${{ needs.resolve-tag.outputs.base_version }}"
+
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            {
+              echo "Detected pre-release tag: ${TAG}"
+              echo "Using base version for changelog/Cargo.toml checks: ${BASE_VERSION}"
+              echo "Crates.io publish is skipped for prerelease tags."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            {
+              echo "Detected release tag: ${TAG}"
+              echo "Crates.io publish is enabled when CARGO_REGISTRY_TOKEN is available."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Audit Dependencies
+        run: cargo make audit
+
+      - name: Deny Check
+        run: cargo make deny
+
+      - name: Run Tests
+        run: cargo make test
+
+      - name: Run WASM Tests (if present)
+        shell: bash
+        run: |
+          if [[ -f tests/e2e_wasm.rs ]] && grep -qE '^[[:space:]]*wasm[[:space:]]*=' Cargo.toml; then
+            cargo make test-wasm
+          else
+            echo "Skipping wasm tests: tests/e2e_wasm.rs or wasm feature missing."
+          fi
+
+      - name: Lint
+        run: cargo make clippy
+
+      - name: Format Check
+        run: cargo make format-check
+
+      - name: Architecture Guardrails (if configured)
+        shell: bash
+        run: |
+          if [[ -f scripts/check_architecture.sh ]]; then
+            cargo make architecture-check
+          else
+            echo "Skipping architecture-check: scripts/check_architecture.sh not found."
+          fi
+
+      - name: Verify Publish Readiness
+        run: cargo publish --dry-run --locked
+
+      - name: Package Check
+        run: cargo package --locked
+
+  publish-crates:
+    name: Publish to Crates.io
+    needs: [resolve-tag, validate]
+    if: needs.resolve-tag.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_OFFLINE: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check CARGO_REGISTRY_TOKEN
+        id: token
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "present=false" >> "${GITHUB_OUTPUT}"
+            echo "CARGO_REGISTRY_TOKEN is not configured. Skipping crates.io publish." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "present=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Publish to Cargo
+        if: steps.token.outputs.present == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  build-binaries:
+    name: Build Binaries
+    needs: [resolve-tag, validate]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: linux-x86_64
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: windows-x86_64
+            archive: zip
+          - os: macos-13
+            target: x86_64-apple-darwin
+            suffix: macos-x86_64
+            archive: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            suffix: macos-arm64
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_NET_OFFLINE: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build Release
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      - name: Package Assets
+        shell: bash
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.release_tag }}"
+          BIN_NAME="sniper"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN_NAME="sniper.exe"
+          fi
+
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}" dist/
+          cp README.md LICENSE sniper.example.toml dist/ 2>/dev/null || :
+
+          cd dist
+          if [[ "${{ matrix.archive }}" == "tar.gz" ]]; then
+            tar -czf "../sniper-${TAG}-${{ matrix.suffix }}.tar.gz" *
+          else
+            7z a "../sniper-${TAG}-${{ matrix.suffix }}.zip" *
+          fi
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sniper-${{ matrix.suffix }}
+          path: sniper-${{ needs.resolve-tag.outputs.release_tag }}-${{ matrix.suffix }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [resolve-tag, build-binaries, publish-crates]
+    if: >
+      always() &&
+      needs.build-binaries.result == 'success' &&
+      (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Build Release Notes
+        id: notes
+        shell: bash
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.release_tag }}"
+          BASE_VERSION="${{ needs.resolve-tag.outputs.base_version }}"
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+
+          {
+            echo "### What's New"
+            echo
+            if [[ -f CHANGELOG.md ]] && grep -qE "^##[[:space:]]+${BASE_VERSION}$" CHANGELOG.md; then
+              awk -v version="${BASE_VERSION}" '
+                $0 ~ "^##[[:space:]]+" version "$" { in_section=1; next }
+                in_section && $0 ~ "^##[[:space:]]+" { exit }
+                in_section { print }
+              ' CHANGELOG.md
+            else
+              echo "- Automated release for ${TAG}."
+              echo "- See commit history for details."
+            fi
+            echo
+            echo "### Installation"
+            echo '```bash'
+            echo 'cargo install sniper'
+            echo '```'
+          } > "${NOTES_FILE}"
+
+          echo "path=${NOTES_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or Update GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.resolve-tag.outputs.release_tag }}
+          name: Release ${{ needs.resolve-tag.outputs.release_tag }}
+          bodyFile: ${{ steps.notes.outputs.path }}
+          artifacts: release-artifacts/*
+          allowUpdates: true
+          omitBodyDuringUpdate: false
+          prerelease: ${{ needs.resolve-tag.outputs.is_prerelease == 'true' }}
+          makeLatest: ${{ needs.resolve-tag.outputs.is_prerelease == 'false' }}

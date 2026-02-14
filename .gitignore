@@ -1,3 +1,5 @@
 keypair.json
-.env
+keypair.devnet.json
+sniper.toml
 target
+log/
