@@ -34,7 +34,7 @@ args = ["clean", "${@}"]
 [tasks.bacon]
 description = "Live code checking with bacon"
 workspace = false
-install_crate = "bacon"
+dependencies = ["check-bacon"]
 command = "bacon"
 args = ["${@}", "check-all"]
 
@@ -80,7 +80,7 @@ args = ["fuzz/check_tools.sh"]
 [tasks.test]
 description = "Run all tests with nextest"
 workspace = false
-install_crate = "cargo-nextest"
+dependencies = ["check-nextest"]
 command = "cargo"
 args = ["nextest", "run", "--workspace", "${@}"]
 
@@ -107,14 +107,14 @@ args = [
 [tasks.deny]
 description = "Check licenses and security advisories"
 workspace = false
-install_crate = "cargo-deny"
+dependencies = ["check-deny"]
 command = "cargo"
 args = ["deny", "check"]
 
 [tasks.audit]
 description = "Security audit for dependencies"
 workspace = false
-install_crate = "cargo-audit"
+dependencies = ["check-audit"]
 command = "cargo"
 args = ["audit", "${@}"]
 
@@ -153,3 +153,39 @@ description = "Stop and uninstall systemd service via internal CLI flags"
 workspace = false
 command = "cargo"
 args = ["run", "--release", "--", "--uninstall-service", "${@}"]
+
+[tasks.check-nextest]
+description = "Verify cargo-nextest is installed"
+workspace = false
+command = "bash"
+args = [
+    "-c",
+    "if ! cargo nextest --version >/dev/null 2>&1; then echo 'cargo-nextest is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-nextest' >&2; exit 1; fi",
+]
+
+[tasks.check-audit]
+description = "Verify cargo-audit is installed"
+workspace = false
+command = "bash"
+args = [
+    "-c",
+    "if ! cargo audit --version >/dev/null 2>&1; then echo 'cargo-audit is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-audit' >&2; exit 1; fi",
+]
+
+[tasks.check-deny]
+description = "Verify cargo-deny is installed"
+workspace = false
+command = "bash"
+args = [
+    "-c",
+    "if ! cargo deny --version >/dev/null 2>&1; then echo 'cargo-deny is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-deny' >&2; exit 1; fi",
+]
+
+[tasks.check-bacon]
+description = "Verify bacon is installed"
+workspace = false
+command = "bash"
+args = [
+    "-c",
+    "if ! bacon --version >/dev/null 2>&1; then echo 'bacon is required. Install once with: CARGO_NET_OFFLINE=false cargo install bacon' >&2; exit 1; fi",
+]

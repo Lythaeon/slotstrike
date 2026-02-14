@@ -78,6 +78,11 @@ jobs:
       - name: Install cargo-make
         uses: davidB/rust-cargo-make@v1
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
