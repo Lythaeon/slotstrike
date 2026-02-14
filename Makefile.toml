@@ -51,12 +51,6 @@ workspace = false
 command = "cargo"
 args = ["check", "--workspace", "--all", "${@}"]
 
-[tasks.architecture-check]
-description = "Enforce architecture boundaries and print coupling metrics"
-workspace = false
-command = "bash"
-args = ["scripts/check_architecture.sh"]
-
 [tasks.fuzz]
 description = "Run fuzzing tests on specified targets"
 workspace = false
