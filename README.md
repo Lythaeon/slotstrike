@@ -1,4 +1,4 @@
-# DeGeneRate Slotstrike
+# Slotstrike
 
 High-performance Solana slotstrike runtime focused on Raydium pool creation events.
 
