@@ -313,10 +313,7 @@ fn render_blue_purple_gradient(text: &str) -> String {
         let _write_result = write!(
             out,
             "\u{1b}[38;2;{};{};{}m{}\u{1b}[0m",
-            red,
-            green,
-            blue,
-            character
+            red, green, blue, character
         );
         index = index.saturating_add(1);
     }
@@ -338,9 +335,7 @@ fn gradient_channel(start: u8, end: u8, index: usize, max_index: usize) -> u8 {
         .saturating_mul(index_u32)
         .checked_div(max_index_u32)
         .unwrap_or(0);
-    let value = start_u32
-        .saturating_add(scaled)
-        .min(u32::from(u8::MAX));
+    let value = start_u32.saturating_add(scaled).min(u32::from(u8::MAX));
     u8::try_from(value).unwrap_or(u8::MAX)
 }
 
