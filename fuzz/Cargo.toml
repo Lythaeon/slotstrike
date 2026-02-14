@@ -1,0 +1,49 @@
+[package]
+name = "sniper-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.sniper]
+path = ".."
+
+[[bin]]
+name = "fuzz_log_parser"
+path = "fuzz_targets/fuzz_log_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_pool_filter"
+path = "fuzz_targets/fuzz_pool_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sol_amount"
+path = "fuzz_targets/fuzz_sol_amount.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_rule_primitives"
+path = "fuzz_targets/fuzz_rule_primitives.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fpga_dma_payload"
+path = "fuzz_targets/fuzz_fpga_dma_payload.rs"
+test = false
+doc = false
+bench = false

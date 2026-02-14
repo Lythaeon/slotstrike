@@ -1,0 +1,15 @@
+type-complexity-threshold = 250
+too-many-arguments-threshold = 6
+enum-variant-name-threshold = 3
+doc-valid-idents = [".."]
+avoid-breaking-exported-api = false
+single-char-binding-names-threshold = 3
+too-many-lines-threshold = 100
+large-error-threshold = 256
+pass-by-value-size-limit = 256
+stack-size-threshold = 512000
+cognitive-complexity-threshold = 25
+max-struct-bools = 3
+max-fn-params-bools = 3
+disallowed-names = ["foo", "bar", "baz", "todo", "temp", "tmp"]
+warn-on-all-wildcard-imports = true
