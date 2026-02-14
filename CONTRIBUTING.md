@@ -79,6 +79,35 @@ Optional:
    - risk notes / regressions considered
    - validation performed (tests, fuzz, replay, etc.)
 
+## Commit Convention
+
+Use Conventional Commits for all commit messages:
+
+```text
+<type>(<scope>): <short summary>
+```
+
+Allowed `type` values include:
+
+- `feat`
+- `fix`
+- `chore`
+- `docs`
+- `refactor`
+- `test`
+- `perf`
+- `ci`
+- `build`
+
+Scope is optional, but use it when the change is limited to one package/module area.  
+Example: `feat(package): add fixed-point parser for slippage`.
+
+More examples:
+
+- `docs(contributing): document commit convention`
+- `refactor(domain): remove float math from rule parsing`
+- `chore(ci): simplify release workflow checks`
+
 ## CI Expectations
 
 PRs run automated checks (`PR Checks` workflow), including tests, lint, formatting, and dependency/security checks.
