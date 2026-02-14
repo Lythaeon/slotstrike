@@ -84,12 +84,6 @@ dependencies = ["check-nextest"]
 command = "cargo"
 args = ["nextest", "run", "--workspace", "${@}"]
 
-[tasks.test-wasm]
-description = "Run WASM e2e tests (requires wasm feature)"
-workspace = false
-command = "cargo"
-args = ["test", "--locked", "--features", "wasm", "--test", "e2e_wasm", "${@}"]
-
 [tasks.clippy]
 description = "Run clippy with strict rules on all targets except fuzz"
 workspace = false

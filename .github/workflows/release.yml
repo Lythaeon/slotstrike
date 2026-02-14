@@ -158,15 +158,6 @@ jobs:
       - name: Run Tests
         run: cargo make test
 
-      - name: Run WASM Tests (if present)
-        shell: bash
-        run: |
-          if [[ -f tests/e2e_wasm.rs ]] && grep -qE '^[[:space:]]*wasm[[:space:]]*=' Cargo.toml; then
-            cargo make test-wasm
-          else
-            echo "Skipping wasm tests: tests/e2e_wasm.rs or wasm feature missing."
-          fi
-
       - name: Lint
         run: cargo make clippy
 

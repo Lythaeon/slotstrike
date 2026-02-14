@@ -52,7 +52,6 @@ cargo make audit
 Optional:
 
 - `cargo make fuzz-all` (fuzz targets)
-- `cargo make test-wasm` (only if `wasm` feature/tests exist)
 - `cargo make architecture-check` (only if `scripts/check_architecture.sh` exists)
 
 ## Coding Rules
