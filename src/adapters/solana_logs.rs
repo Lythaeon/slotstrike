@@ -278,7 +278,7 @@ mod tests {
         let stream = SolanaPubsubLogStream::kernel_bypass(
             "invalid_url".to_owned(),
             KernelBypassEngine::AfXdp,
-            "/tmp/sniper-kernel-bypass.sock".to_owned(),
+            "/tmp/slotstrike-kernel-bypass.sock".to_owned(),
         );
         let (sender, _receiver) = mpsc::unbounded_channel();
 
@@ -294,7 +294,7 @@ mod tests {
         let kernel_stream = SolanaPubsubLogStream::kernel_bypass(
             "wss://example".to_owned(),
             KernelBypassEngine::AfXdp,
-            "/tmp/sniper-kernel-bypass.sock".to_owned(),
+            "/tmp/slotstrike-kernel-bypass.sock".to_owned(),
         );
         let standard_stream = SolanaPubsubLogStream::standard_tcp("wss://example".to_owned());
 

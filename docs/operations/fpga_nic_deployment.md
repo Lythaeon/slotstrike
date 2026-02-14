@@ -14,13 +14,13 @@ This runbook covers:
 2. Out-of-band access to host (IPMI/ILO or console).
 3. Backup of current NIC firmware image and toolchain.
 4. `runtime.kernel_tcp_bypass = true` and `runtime.fpga_enabled = false` available as immediate fallback.
-5. Latest known-good `sniper.toml` copy stored before changes.
+5. Latest known-good `slotstrike.toml` copy stored before changes.
 
 ## Deployment Steps
 
-1. Stop sniper service:
+1. Stop slotstrike service:
 ```bash
-systemctl stop sniper
+systemctl stop slotstrike
 ```
 
 2. Capture baseline state:
@@ -42,7 +42,7 @@ ethtool -i <nic_ifname>
 <vendor_tool> status --device <nic_ifname>
 ```
 
-6. Enable FPGA path in `sniper.toml` under `[runtime]`:
+6. Enable FPGA path in `slotstrike.toml` under `[runtime]`:
 ```bash
 fpga_enabled = true
 fpga_vendor = "<vendor_name>"
@@ -51,8 +51,8 @@ fpga_verbose = false
 
 7. Start service and confirm ingress:
 ```bash
-systemctl start sniper
-journalctl -u sniper -f
+systemctl start slotstrike
+journalctl -u slotstrike -f
 ```
 
 Expected logs include `Ingress path selected: FPGA DMA ring`.
@@ -75,7 +75,7 @@ phc_ctl /dev/ptp0 cmp
 
 ## Rollback Procedure
 
-1. Switch runtime path to non-FPGA immediately in `sniper.toml` `[runtime]`:
+1. Switch runtime path to non-FPGA immediately in `slotstrike.toml` `[runtime]`:
 ```bash
 fpga_enabled = false
 kernel_tcp_bypass = true
@@ -83,7 +83,7 @@ kernel_tcp_bypass = true
 
 2. Restart service:
 ```bash
-systemctl restart sniper
+systemctl restart slotstrike
 ```
 
 3. If firmware issue persists, flash previous known-good image:
@@ -95,7 +95,7 @@ systemctl restart sniper
 
 5. Record incident timeline and attach logs from:
 ```bash
-journalctl -u sniper --since "30 min ago"
+journalctl -u slotstrike --since "30 min ago"
 ```
 
 ## Post-Change Checks

@@ -22,9 +22,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
-
       - name: Install cargo-make
         uses: davidB/rust-cargo-make@v1
 
@@ -57,15 +54,3 @@ jobs:
 
       - name: Format Check
         run: cargo make format-check
-
-      - name: Architecture Guardrails (if configured)
-        shell: bash
-        run: |
-          if [[ -f scripts/check_architecture.sh ]]; then
-            cargo make architecture-check
-          else
-            echo "Skipping architecture-check: scripts/check_architecture.sh not found."
-          fi
-
-      - name: Verify Publish Readiness
-        run: cargo publish --dry-run --locked

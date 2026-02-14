@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Write as _, io::IsTerminal, sync::Arc};
 
 use log::LevelFilter;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -42,9 +42,11 @@ async fn run_inner() -> Result<(), String> {
         return Ok(());
     }
 
+    maybe_print_startup_banner();
+
     init_logging(resolve_level_filter()).await?;
 
-    log::info!("Hyper Sniper");
+    log::info!("Slotstrike runtime");
 
     let settings = RuntimeSettings::from_cli_args(&args)?;
 
@@ -262,5 +264,104 @@ fn format_rules(rules: &[String]) -> String {
         "(none)".to_owned()
     } else {
         rules.join("\n\t\t")
+    }
+}
+
+const STARTUP_BANNER: &str = r#"
+███████╗██╗      ██████╗ ████████╗███████╗████████╗██████╗ ██╗██╗  ██╗███████╗
+██╔════╝██║     ██╔═══██╗╚══██╔══╝██╔════╝╚══██╔══╝██╔══██╗██║██║ ██╔╝██╔════╝
+███████╗██║     ██║   ██║   ██║   ███████╗   ██║   ██████╔╝██║█████╔╝ █████╗
+╚════██║██║     ██║   ██║   ██║   ╚════██║   ██║   ██╔══██╗██║██╔═██╗ ██╔══╝
+███████║███████╗╚██████╔╝   ██║   ███████║   ██║   ██║  ██║██║██║  ██╗███████╗
+╚══════╝╚══════╝ ╚═════╝    ╚═╝   ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝"#;
+
+fn maybe_print_startup_banner() {
+    if !should_render_local_banner() {
+        return;
+    }
+
+    println!("{}", render_blue_purple_gradient(STARTUP_BANNER));
+}
+
+fn should_render_local_banner() -> bool {
+    should_render_local_banner_with(std::io::stdout().is_terminal())
+}
+
+const fn should_render_local_banner_with(stdout_is_terminal: bool) -> bool {
+    stdout_is_terminal
+}
+
+fn render_blue_purple_gradient(text: &str) -> String {
+    let visible_count = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let max_index = visible_count.saturating_sub(1);
+
+    let mut out = String::with_capacity(text.len().saturating_mul(20));
+    let mut index = 0usize;
+
+    for character in text.chars() {
+        if character.is_whitespace() {
+            out.push(character);
+            continue;
+        }
+
+        let red = gradient_channel(42, 181, index, max_index);
+        let green = gradient_channel(106, 64, index, max_index);
+        let blue = gradient_channel(255, 255, index, max_index);
+        let _write_result = write!(
+            out,
+            "\u{1b}[38;2;{};{};{}m{}\u{1b}[0m",
+            red, green, blue, character
+        );
+        index = index.saturating_add(1);
+    }
+
+    out
+}
+
+fn gradient_channel(start: u8, end: u8, index: usize, max_index: usize) -> u8 {
+    if max_index == 0 {
+        return start;
+    }
+
+    let start_u32 = u32::from(start);
+    let end_u32 = u32::from(end);
+    let span = end_u32.saturating_sub(start_u32);
+    let index_u32 = u32::try_from(index).unwrap_or(u32::MAX);
+    let max_index_u32 = u32::try_from(max_index).unwrap_or(1);
+    let scaled = span
+        .saturating_mul(index_u32)
+        .checked_div(max_index_u32)
+        .unwrap_or(0);
+    let value = start_u32.saturating_add(scaled).min(u32::from(u8::MAX));
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{gradient_channel, render_blue_purple_gradient, should_render_local_banner_with};
+
+    #[test]
+    fn banner_is_disabled_when_stdout_is_not_terminal() {
+        assert!(!should_render_local_banner_with(false));
+    }
+
+    #[test]
+    fn banner_is_enabled_for_local_terminal_runs() {
+        assert!(should_render_local_banner_with(true));
+    }
+
+    #[test]
+    fn gradient_channel_reaches_end_value() {
+        let value = gradient_channel(110, 255, 10, 10);
+        assert_eq!(value, 255);
+    }
+
+    #[test]
+    fn gradient_renderer_preserves_whitespace() {
+        let rendered = render_blue_purple_gradient("A B");
+        assert!(rendered.contains(" "));
     }
 }

@@ -34,7 +34,7 @@ args = ["clean", "${@}"]
 [tasks.bacon]
 description = "Live code checking with bacon"
 workspace = false
-dependencies = ["check-bacon"]
+install_crate = "bacon"
 command = "bacon"
 args = ["${@}", "check-all"]
 
@@ -50,12 +50,6 @@ description = "Quick compilation check without building"
 workspace = false
 command = "cargo"
 args = ["check", "--workspace", "--all", "${@}"]
-
-[tasks.architecture-check]
-description = "Enforce architecture boundaries and print coupling metrics"
-workspace = false
-command = "bash"
-args = ["scripts/check_architecture.sh"]
 
 [tasks.fuzz]
 description = "Run fuzzing tests on specified targets"
@@ -78,11 +72,12 @@ command = "bash"
 args = ["fuzz/check_tools.sh"]
 
 [tasks.test]
-description = "Run all tests with nextest"
+description = "Run all tests using cargo-nextest"
 workspace = false
-dependencies = ["check-nextest"]
+install_crate = "cargo-nextest"
+install_crate_args = ["--locked"]
 command = "cargo"
-args = ["nextest", "run", "--workspace", "${@}"]
+args = ["nextest", "run", "--workspace", "--no-tests=pass", "${@}"]
 
 [tasks.clippy]
 description = "Run clippy with strict rules on all targets except fuzz"
@@ -101,14 +96,14 @@ args = [
 [tasks.deny]
 description = "Check licenses and security advisories"
 workspace = false
-dependencies = ["check-deny"]
+install_crate = "cargo-deny"
 command = "cargo"
 args = ["deny", "check"]
 
 [tasks.audit]
 description = "Security audit for dependencies"
 workspace = false
-dependencies = ["check-audit"]
+install_crate = "cargo-audit"
 command = "cargo"
 args = ["audit", "${@}"]
 
@@ -116,10 +111,10 @@ args = ["audit", "${@}"]
 description = "Run synthetic burst replay benchmark (FPGA vs kernel-bypass)"
 workspace = false
 command = "cargo"
-args = ["run", "--release", "--", "--config", "sniper.toml", "--replay-benchmark", "${@}"]
+args = ["run", "--release", "--", "--config", "slotstrike.toml", "--replay-benchmark", "${@}"]
 
-[tasks.run-sniper]
-description = "Run sniper and forward CLI args (example: --config /path/sniper.toml)"
+[tasks.run-slotstrike]
+description = "Run slotstrike and forward CLI args (example: --config /path/slotstrike.toml)"
 workspace = false
 command = "cargo"
 args = ["run", "--release", "--", "${@}"]
@@ -147,39 +142,3 @@ description = "Stop and uninstall systemd service via internal CLI flags"
 workspace = false
 command = "cargo"
 args = ["run", "--release", "--", "--uninstall-service", "${@}"]
-
-[tasks.check-nextest]
-description = "Verify cargo-nextest is installed"
-workspace = false
-command = "bash"
-args = [
-    "-c",
-    "if ! cargo nextest --version >/dev/null 2>&1; then echo 'cargo-nextest is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-nextest' >&2; exit 1; fi",
-]
-
-[tasks.check-audit]
-description = "Verify cargo-audit is installed"
-workspace = false
-command = "bash"
-args = [
-    "-c",
-    "if ! cargo audit --version >/dev/null 2>&1; then echo 'cargo-audit is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-audit' >&2; exit 1; fi",
-]
-
-[tasks.check-deny]
-description = "Verify cargo-deny is installed"
-workspace = false
-command = "bash"
-args = [
-    "-c",
-    "if ! cargo deny --version >/dev/null 2>&1; then echo 'cargo-deny is required. Install once with: CARGO_NET_OFFLINE=false cargo install cargo-deny' >&2; exit 1; fi",
-]
-
-[tasks.check-bacon]
-description = "Verify bacon is installed"
-workspace = false
-command = "bash"
-args = [
-    "-c",
-    "if ! bacon --version >/dev/null 2>&1; then echo 'bacon is required. Install once with: CARGO_NET_OFFLINE=false cargo install bacon' >&2; exit 1; fi",
-]

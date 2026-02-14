@@ -2,7 +2,7 @@
 
 ## Scope
 
-This repository contains a latency-sensitive Solana sniper runtime.  
+This repository contains a latency-sensitive Solana slotstrike runtime.  
 Changes should prioritize:
 
 - correctness
@@ -27,7 +27,7 @@ cd DeGeneRate
 ```
 4. Create local runtime config:
 ```bash
-cp sniper.example.toml sniper.toml
+cp slotstrike.example.toml slotstrike.toml
 ```
 
 Optional (for fuzzing):
@@ -52,7 +52,6 @@ cargo make audit
 Optional:
 
 - `cargo make fuzz-all` (fuzz targets)
-- `cargo make architecture-check` (only if `scripts/check_architecture.sh` exists)
 
 ## Coding Rules
 
@@ -79,6 +78,35 @@ Optional:
    - summary of changes
    - risk notes / regressions considered
    - validation performed (tests, fuzz, replay, etc.)
+
+## Commit Convention
+
+Use Conventional Commits for all commit messages:
+
+```text
+<type>(<scope>): <short summary>
+```
+
+Allowed `type` values include:
+
+- `feat`
+- `fix`
+- `chore`
+- `docs`
+- `refactor`
+- `test`
+- `perf`
+- `ci`
+- `build`
+
+Scope is optional, but use it when the change is limited to one package/module area.  
+Example: `feat(package): add fixed-point parser for slippage`.
+
+More examples:
+
+- `docs(contributing): document commit convention`
+- `refactor(domain): remove float math from rule parsing`
+- `chore(ci): simplify release workflow checks`
 
 ## CI Expectations
 

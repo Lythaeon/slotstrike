@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use sniper::{
+use slotstrike::{
     adapters::{fpga_feed::FpgaFeedAdapter, raydium::RAYDIUM_V4_PROGRAM_ID},
     app::context::ExecutionContext,
     domain::{

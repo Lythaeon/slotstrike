@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-CONFIG_PATH="${CONFIG_PATH:-sniper.toml}"
+CONFIG_PATH="${CONFIG_PATH:-slotstrike.toml}"
 DEVNET_RPC_URL="${DEVNET_RPC_URL:-https://api.devnet.solana.com}"
 DEVNET_WSS_URL="${DEVNET_WSS_URL:-wss://api.devnet.solana.com}"
 KEYPAIR_PATH="${KEYPAIR_PATH:-keypair.devnet.json}"
@@ -157,7 +157,7 @@ resolve_target_mint() {
 
 prepare_smoke_config() {
   local target_mint="$1"
-  TMP_SMOKE_CONFIG_PATH="$(mktemp /tmp/sniper.devnet.smoke.XXXXXX.toml)"
+  TMP_SMOKE_CONFIG_PATH="$(mktemp /tmp/slotstrike.devnet.smoke.XXXXXX.toml)"
   export TMP_SMOKE_CONFIG_PATH
 
   cat > "${TMP_SMOKE_CONFIG_PATH}" <<EOF
@@ -212,16 +212,16 @@ run_smoke_snipe() {
   set -e
 
   if [[ "${run_status}" -eq 124 ]]; then
-    echo "Smoke timeout reached (${SMOKE_TIMEOUT_SECS}s). Sniper started and ran, but no matching snipe event was observed in-window."
+    echo "Smoke timeout reached (${SMOKE_TIMEOUT_SECS}s). Slotstrike started and ran, but no matching snipe event was observed in-window."
     return 0
   fi
 
   if [[ "${run_status}" -ne 0 ]]; then
-    echo "Sniper run failed with exit code: ${run_status}" >&2
+    echo "Slotstrike run failed with exit code: ${run_status}" >&2
     return "${run_status}"
   fi
 
-  echo "Sniper run completed successfully."
+  echo "Slotstrike run completed successfully."
 }
 
 main() {
