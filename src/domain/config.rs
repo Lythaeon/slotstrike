@@ -86,7 +86,7 @@ pub fn load_sniper_config_file(path: &str) -> Result<SniperConfigFile, String> {
 
 pub fn parse_sniper_config_toml(config_text: &str) -> Result<SniperConfigFile, String> {
     toml::from_str::<SniperConfigFile>(config_text)
-        .map_err(|error| format!("Invalid sniper.toml format: {}", error))
+        .map_err(|error| format!("Invalid slotstrike.toml format: {}", error))
 }
 
 fn default_tx_submission_mode() -> String {
@@ -102,7 +102,7 @@ fn default_kernel_tcp_bypass_engine() -> String {
 }
 
 fn default_kernel_bypass_socket_path() -> String {
-    "/tmp/sniper-kernel-bypass.sock".to_owned()
+    "/tmp/slotstrike-kernel-bypass.sock".to_owned()
 }
 
 fn default_fpga_vendor() -> String {

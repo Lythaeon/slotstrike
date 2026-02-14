@@ -71,7 +71,7 @@ mod tests {
 
     fn settings_for(mode: NetworkStackMode) -> Result<RuntimeSettings, &'static str> {
         Ok(RuntimeSettings {
-            config_path: "sniper.toml".to_owned(),
+            config_path: "slotstrike.toml".to_owned(),
             priority_fees: PriorityFeesMicrolamports::new(1),
             keypair_path: "keypair.json".to_owned(),
             tx_submission_mode: TxSubmissionMode::Jito,
@@ -81,7 +81,7 @@ mod tests {
             kernel_tcp_bypass_enabled: true,
             kernel_tcp_bypass_engine: KernelBypassEngine::AfXdp,
             kernel_bypass_socket_path: NonEmptyText::try_from(
-                "/tmp/sniper-kernel-bypass.sock".to_owned(),
+                "/tmp/slotstrike-kernel-bypass.sock".to_owned(),
             )?,
             fpga_enabled: mode == NetworkStackMode::Fpga,
             fpga_verbose: false,

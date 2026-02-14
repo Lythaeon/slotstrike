@@ -10,14 +10,14 @@
 
 1. Confirm active ingress path:
 ```bash
-journalctl -u sniper -n 200 | rg "Ingress path selected|ingress unavailable"
+journalctl -u slotstrike -n 200 | rg "Ingress path selected|ingress unavailable"
 ```
 
 2. Check latency telemetry trends:
 ```bash
-journalctl -u sniper -n 400 | rg "Latency telemetry|Latency SLO alert"
+journalctl -u slotstrike -n 400 | rg "Latency telemetry|Latency SLO alert"
 ```
-If no telemetry lines appear, verify `[telemetry].enabled` in `sniper.toml`.
+If no telemetry lines appear, verify `[telemetry].enabled` in `slotstrike.toml`.
 
 3. Validate RPC and websocket reachability from host.
 
@@ -26,7 +26,7 @@ If no telemetry lines appear, verify `[telemetry].enabled` in `sniper.toml`.
 ### FPGA Path Degraded
 
 1. Verify NIC/PTP health.
-2. If unstable, set in `sniper.toml` `[runtime]`:
+2. If unstable, set in `slotstrike.toml` `[runtime]`:
 ```bash
 fpga_enabled=false
 kernel_tcp_bypass=true
@@ -38,7 +38,7 @@ kernel_tcp_bypass=true
 1. Validate `runtime.kernel_tcp_bypass_engine`.
    Supported values: `af_xdp`, `dpdk`, `openonload`, `af_xdp_or_dpdk_external`.
 2. If AF_XDP/DPDK external bridge mode is selected, verify `runtime.kernel_bypass_socket_path` exists and producer is running.
-3. If unsupported or degraded, set in `sniper.toml` `[runtime]`:
+3. If unsupported or degraded, set in `slotstrike.toml` `[runtime]`:
 ```bash
 kernel_tcp_bypass=false
 ```
@@ -58,7 +58,7 @@ kernel_tcp_bypass=false
 Use synthetic harness to compare local path characteristics:
 
 ```bash
-cargo run --release -- --config sniper.toml --replay-benchmark
+cargo run --release -- --config slotstrike.toml --replay-benchmark
 ```
 
 If FPGA path underperforms kernel-bypass path in replay, treat as ingress processing regression.

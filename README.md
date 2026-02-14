@@ -1,6 +1,6 @@
-# DeGeneRate Solana Sniper
+# DeGeneRate Slotstrike
 
-High-performance Solana sniper focused on Raydium pool creation events.
+High-performance Solana slotstrike runtime focused on Raydium pool creation events.
 
 ## Scope
 
@@ -22,7 +22,7 @@ High-performance Solana sniper focused on Raydium pool creation events.
 
 This project is TOML-only. `.env` is not used by runtime configuration.
 
-1. Copy `sniper.example.toml` to `sniper.toml`.
+1. Copy `slotstrike.example.toml` to `slotstrike.toml`.
 2. Edit the runtime and rule sections.
 3. Start the binary with `--config`.
 
@@ -38,7 +38,7 @@ tx_submission_mode = "jito"
 jito_url = "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions?bundleOnly=true"
 kernel_tcp_bypass = true
 kernel_tcp_bypass_engine = "af_xdp_or_dpdk_external"
-kernel_bypass_socket_path = "/tmp/sniper-kernel-bypass.sock"
+kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
 
 [telemetry]
 enabled = true
@@ -152,13 +152,13 @@ External kernel-bypass bridge frame format (newline-delimited JSON on unix socke
 Direct:
 
 ```bash
-cargo run --release -- --config sniper.toml
+cargo run --release -- --config slotstrike.toml
 ```
 
 Via cargo-make:
 
 ```bash
-cargo make run-sniper -- --config sniper.toml
+cargo make run-slotstrike -- --config slotstrike.toml
 ```
 
 Useful runtime flags:
@@ -180,7 +180,7 @@ Service registration is built into the binary.
 Install + enable + start:
 
 ```bash
-sudo cargo run --release -- --install-service --config /home/sniper/sniper/sniper.toml
+sudo cargo run --release -- --install-service --config /home/slotstrike/slotstrike/slotstrike.toml
 ```
 
 Uninstall:
@@ -191,7 +191,7 @@ sudo cargo run --release -- --uninstall-service
 
 Optional install flags:
 
-- `--service-name <name>` (default `sniper`)
+- `--service-name <name>` (default `slotstrike`)
 - `--service-user <user>` (default from `SUDO_USER`/`USER`)
 - `--service-group <group>` (default user primary group)
 - `--systemd-dir <path>` (default `/etc/systemd/system`)
@@ -200,7 +200,7 @@ Optional install flags:
 Cargo-make wrappers:
 
 ```bash
-sudo cargo make service-install -- --config /home/sniper/sniper/sniper.toml
+sudo cargo make service-install -- --config /home/slotstrike/slotstrike/slotstrike.toml
 sudo cargo make service-uninstall
 ```
 

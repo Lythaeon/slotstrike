@@ -4,9 +4,9 @@ use std::{
     process::Command,
 };
 
-const DEFAULT_SERVICE_NAME: &str = "sniper";
+const DEFAULT_SERVICE_NAME: &str = "slotstrike";
 const DEFAULT_SYSTEMD_DIR: &str = "/etc/systemd/system";
-const DEFAULT_CONFIG_PATH: &str = "sniper.toml";
+const DEFAULT_CONFIG_PATH: &str = "slotstrike.toml";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ServiceOptions {
@@ -206,7 +206,7 @@ fn primary_group_for_user(user: &str) -> Option<String> {
 fn render_unit(options: &ServiceOptions, log_dir: &Path) -> String {
     format!(
         "[Unit]
-Description=Sniper service
+Description=Slotstrike service
 After=network.target
 
 [Service]
@@ -293,12 +293,12 @@ mod tests {
         let args = vec![
             "--install-service".to_owned(),
             "--config".to_owned(),
-            "/tmp/sniper.toml".to_owned(),
+            "/tmp/slotstrike.toml".to_owned(),
         ];
 
         assert_eq!(
             arg_value(&args, "--config"),
-            Some("/tmp/sniper.toml".to_owned())
+            Some("/tmp/slotstrike.toml".to_owned())
         );
     }
 
@@ -317,19 +317,19 @@ mod tests {
     fn unit_template_contains_config_arg() {
         let options = super::ServiceOptions {
             service_name: DEFAULT_SERVICE_NAME.to_owned(),
-            service_user: "sniper".to_owned(),
-            service_group: "sniper".to_owned(),
+            service_user: "slotstrike".to_owned(),
+            service_group: "slotstrike".to_owned(),
             systemd_dir: PathBuf::from("/etc/systemd/system"),
-            config_path: PathBuf::from("/home/sniper/sniper/sniper.toml"),
-            working_dir: PathBuf::from("/home/sniper/sniper"),
-            bin_path: PathBuf::from("/home/sniper/sniper/target/release/sniper"),
+            config_path: PathBuf::from("/home/slotstrike/slotstrike/slotstrike.toml"),
+            working_dir: PathBuf::from("/home/slotstrike/slotstrike"),
+            bin_path: PathBuf::from("/home/slotstrike/slotstrike/target/release/slotstrike"),
             enable_now: true,
         };
-        let log_dir = PathBuf::from("/home/sniper/sniper/log");
+        let log_dir = PathBuf::from("/home/slotstrike/slotstrike/log");
 
         let rendered = render_unit(&options, &log_dir);
         assert!(rendered.contains(
-            "ExecStart=/home/sniper/sniper/target/release/sniper --config /home/sniper/sniper/sniper.toml"
+            "ExecStart=/home/slotstrike/slotstrike/target/release/slotstrike --config /home/slotstrike/slotstrike/slotstrike.toml"
         ));
     }
 }

@@ -9,7 +9,7 @@ kernel_tcp_bypass = true
 # supported: "af_xdp", "dpdk", "openonload", "af_xdp_or_dpdk_external"
 kernel_tcp_bypass_engine = "af_xdp_or_dpdk_external"
 # used when kernel_tcp_bypass_engine is AF_XDP/DPDK external bridge mode
-kernel_bypass_socket_path = "/tmp/sniper-kernel-bypass.sock"
+kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
 fpga_enabled = false
 fpga_verbose = false
 fpga_vendor = "generic"

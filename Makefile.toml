@@ -116,10 +116,10 @@ args = ["audit", "${@}"]
 description = "Run synthetic burst replay benchmark (FPGA vs kernel-bypass)"
 workspace = false
 command = "cargo"
-args = ["run", "--release", "--", "--config", "sniper.toml", "--replay-benchmark", "${@}"]
+args = ["run", "--release", "--", "--config", "slotstrike.toml", "--replay-benchmark", "${@}"]
 
-[tasks.run-sniper]
-description = "Run sniper and forward CLI args (example: --config /path/sniper.toml)"
+[tasks.run-slotstrike]
+description = "Run slotstrike and forward CLI args (example: --config /path/slotstrike.toml)"
 workspace = false
 command = "cargo"
 args = ["run", "--release", "--", "${@}"]

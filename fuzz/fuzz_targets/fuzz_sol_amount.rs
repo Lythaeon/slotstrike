@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use sniper::domain::value_objects::sol_amount::parse_positive_sol_str_to_lamports;
+use slotstrike::domain::value_objects::sol_amount::parse_positive_sol_str_to_lamports;
 
 fuzz_target!(|data: &[u8]| {
     let raw = String::from_utf8_lossy(data);

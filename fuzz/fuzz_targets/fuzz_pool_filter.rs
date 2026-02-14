@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use sniper::slices::sniper::pool_filter::{
+use slotstrike::slices::sniper::pool_filter::{
     is_cpmm_candidate_logs, is_openbook_candidate_logs, is_pool_creation_candidate_logs,
     is_pool_creation_dma_payload,
 };

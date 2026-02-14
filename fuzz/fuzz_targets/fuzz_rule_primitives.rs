@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use sniper::domain::value_objects::{RuleAddress, RuleSlippageBps};
+use slotstrike::domain::value_objects::{RuleAddress, RuleSlippageBps};
 
 fuzz_target!(|data: &[u8]| {
     let input = String::from_utf8_lossy(data);

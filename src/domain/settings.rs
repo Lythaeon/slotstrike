@@ -58,7 +58,7 @@ impl RuntimeSettings {
     }
 
     pub(crate) fn from_cli_args(args: &[String]) -> Result<Self, String> {
-        let config_path = arg_value(args, "--config").unwrap_or_else(|| "sniper.toml".to_owned());
+        let config_path = arg_value(args, "--config").unwrap_or_else(|| "slotstrike.toml".to_owned());
         let parsed_config = load_sniper_config_file(&config_path)?;
         Self::from_parsed_config(args, config_path, &parsed_config)
     }
@@ -236,7 +236,7 @@ report_period_secs = 15
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_ok());
             if let Ok(settings) = settings {
                 assert_eq!(settings.network_stack_mode, NetworkStackMode::KernelBypass);
@@ -256,7 +256,7 @@ report_period_secs = 15
         if let Ok(config) = config {
             let settings = RuntimeSettings::from_parsed_config(
                 &["--fpga".to_owned()],
-                "sniper.toml".to_owned(),
+                "slotstrike.toml".to_owned(),
                 &config,
             );
             assert!(settings.is_ok());
@@ -291,7 +291,7 @@ replay_burst_size = 512
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_ok());
             if let Ok(settings) = settings {
                 assert_eq!(settings.network_stack_mode, NetworkStackMode::StandardTcp);
@@ -322,7 +322,7 @@ replay_burst_size = 512
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_ok());
             if let Ok(settings) = settings {
                 assert_eq!(settings.tx_submission_mode, TxSubmissionMode::Direct);
@@ -354,7 +354,7 @@ replay_burst_size = 512
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_ok());
             if let Ok(settings) = settings {
                 assert_eq!(
@@ -390,7 +390,7 @@ replay_burst_size = 512
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_err());
         }
     }
@@ -424,7 +424,7 @@ report_period_secs = 0
         assert!(config.is_ok());
         if let Ok(config) = config {
             let settings =
-                RuntimeSettings::from_parsed_config(&Vec::new(), "sniper.toml".to_owned(), &config);
+                RuntimeSettings::from_parsed_config(&Vec::new(), "slotstrike.toml".to_owned(), &config);
             assert!(settings.is_ok());
             if let Ok(settings) = settings {
                 assert!(!settings.telemetry_enabled);

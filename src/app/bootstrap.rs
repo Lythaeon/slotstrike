@@ -44,7 +44,7 @@ async fn run_inner() -> Result<(), String> {
 
     init_logging(resolve_level_filter()).await?;
 
-    log::info!("Hyper Sniper");
+    log::info!("Slotstrike runtime");
 
     let settings = RuntimeSettings::from_cli_args(&args)?;
 

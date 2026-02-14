@@ -2,7 +2,7 @@
 
 ## Scope
 
-This repository contains a latency-sensitive Solana sniper runtime.  
+This repository contains a latency-sensitive Solana slotstrike runtime.  
 Changes should prioritize:
 
 - correctness
@@ -27,7 +27,7 @@ cd DeGeneRate
 ```
 4. Create local runtime config:
 ```bash
-cp sniper.example.toml sniper.toml
+cp slotstrike.example.toml slotstrike.toml
 ```
 
 Optional (for fuzzing):

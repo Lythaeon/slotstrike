@@ -7,7 +7,7 @@ The runtime uses hexagonal boundaries with vertical slices:
 1. `ports/`: external contracts.
 2. `adapters/`: transport and persistence implementations.
 3. `domain/`: settings, events, rules, value objects.
-4. `slices/`: business flows (`config_sync`, `sniper`).
+4. `slices/`: business flows (`config_sync`, strategy execution).
 5. `app/`: bootstrap and composition root.
 
 ## Ingress Topology
@@ -33,7 +33,7 @@ For AF_XDP/DPDK bridge mode, provide `runtime.kernel_bypass_socket_path` and str
    - receive timestamp
    - optional hardware timestamp
    - normalized nanosecond timestamp
-3. `SniperEngine` classifies candidate pool-creation events.
+3. Core engine (`SniperEngine`) classifies candidate pool-creation events.
 4. Candidate events dispatch into slice handlers (`cpmm`, `openbook`).
 
 ## Deterministic Filtering
@@ -61,7 +61,7 @@ Set `[telemetry].enabled = false` to fully disable telemetry sampling/report out
 Synthetic replay mode benchmarks burst ingestion of FPGA-style payloads and kernel-bypass log events:
 
 ```bash
-cargo run --release -- --config sniper.toml --replay-benchmark
+cargo run --release -- --config slotstrike.toml --replay-benchmark
 ```
 
 Tune with:
