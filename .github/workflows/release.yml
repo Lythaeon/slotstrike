@@ -22,6 +22,8 @@ jobs:
       base_version: ${{ steps.resolve.outputs.base_version }}
       is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
       tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      release_exists: ${{ steps.resolve.outputs.release_exists }}
+      release_draft: ${{ steps.resolve.outputs.release_draft }}
       should_release: ${{ steps.resolve.outputs.should_release }}
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +32,8 @@ jobs:
 
       - id: resolve
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           CLEAN_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           if [[ -z "${CLEAN_VERSION}" ]]; then
@@ -47,9 +51,28 @@ jobs:
           TAG="v${CLEAN_VERSION}"
           if git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
             TAG_EXISTS="true"
-            SHOULD_RELEASE="false"
           else
             TAG_EXISTS="false"
+          fi
+
+          RELEASE_EXISTS="false"
+          RELEASE_DRAFT="false"
+          RELEASE_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
+          RELEASE_JSON="$(mktemp)"
+          if curl --fail --silent \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${RELEASE_URL}" > "${RELEASE_JSON}"; then
+            RELEASE_EXISTS="true"
+            if grep -q '"draft":[[:space:]]*true' "${RELEASE_JSON}"; then
+              RELEASE_DRAFT="true"
+            fi
+          fi
+          rm -f "${RELEASE_JSON}"
+
+          if [[ "${RELEASE_EXISTS}" == "true" && "${RELEASE_DRAFT}" != "true" ]]; then
+            SHOULD_RELEASE="false"
+          else
             SHOULD_RELEASE="true"
           fi
 
@@ -58,15 +81,39 @@ jobs:
           echo "base_version=${BASE_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "is_prerelease=${IS_PRERELEASE}" >> "${GITHUB_OUTPUT}"
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
+          echo "release_exists=${RELEASE_EXISTS}" >> "${GITHUB_OUTPUT}"
+          echo "release_draft=${RELEASE_DRAFT}" >> "${GITHUB_OUTPUT}"
           echo "should_release=${SHOULD_RELEASE}" >> "${GITHUB_OUTPUT}"
 
           {
             echo "Detected version: ${CLEAN_VERSION}"
             echo "Resolved release tag: ${TAG}"
-            if [[ "${TAG_EXISTS}" == "true" ]]; then
-              echo "Tag already exists. Skipping release pipeline."
+            if [[ "${SHOULD_RELEASE}" == "false" ]]; then
+              echo "Published release already exists for ${TAG}. Skipping release pipeline."
+            elif [[ "${RELEASE_EXISTS}" == "true" && "${RELEASE_DRAFT}" == "true" ]]; then
+              echo "Draft release already exists for ${TAG}. Continuing release pipeline."
+            elif [[ "${TAG_EXISTS}" == "true" ]]; then
+              echo "Tag exists but GitHub release is missing. Continuing release pipeline."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  prepare-release:
+    name: Prepare GitHub Release
+    needs: [resolve-tag, validate]
+    if: needs.resolve-tag.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Ensure Draft Release Exists
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.resolve-tag.outputs.release_tag }}
+          commit: ${{ github.sha }}
+          name: Release ${{ needs.resolve-tag.outputs.release_tag }}
+          draft: true
+          allowUpdates: true
+          prerelease: ${{ needs.resolve-tag.outputs.is_prerelease == 'true' }}
 
   validate:
     name: Validate Release
@@ -155,7 +202,7 @@ jobs:
 
   publish-crates:
     name: Publish to Crates.io
-    needs: [resolve-tag, validate]
+    needs: [resolve-tag, validate, prepare-release]
     if: needs.resolve-tag.outputs.should_release == 'true' && needs.resolve-tag.outputs.is_prerelease == 'false'
     runs-on: ubuntu-latest
     env:
@@ -190,7 +237,7 @@ jobs:
 
   build-binaries:
     name: Build Binaries
-    needs: [resolve-tag, validate]
+    needs: [resolve-tag, validate, prepare-release]
     if: needs.resolve-tag.outputs.should_release == 'true'
     strategy:
       matrix:
@@ -257,10 +304,11 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [resolve-tag, build-binaries, publish-crates]
+    needs: [resolve-tag, prepare-release, build-binaries, publish-crates]
     if: >
       always() &&
       needs.resolve-tag.outputs.should_release == 'true' &&
+      needs.prepare-release.result == 'success' &&
       needs.build-binaries.result == 'success' &&
       (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
     runs-on: ubuntu-latest
@@ -315,6 +363,7 @@ jobs:
           name: Release ${{ needs.resolve-tag.outputs.release_tag }}
           bodyFile: ${{ steps.notes.outputs.path }}
           artifacts: release-artifacts/*
-          allowUpdates: false
+          allowUpdates: true
+          draft: false
           prerelease: ${{ needs.resolve-tag.outputs.is_prerelease == 'true' }}
           makeLatest: ${{ needs.resolve-tag.outputs.is_prerelease == 'false' }}
