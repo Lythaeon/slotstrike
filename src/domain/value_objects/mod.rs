@@ -4,6 +4,6 @@ pub mod sol_amount;
 
 pub use rule_primitives::{RuleAddress, RuleSlippageBps, RuleSolAmount};
 pub use runtime::{
-    KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize, ReplayEventCount,
-    TxSubmissionMode,
+    FpgaIngressMode, KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize,
+    ReplayEventCount, TxSubmissionMode,
 };

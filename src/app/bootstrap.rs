@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, io::IsTerminal, sync::Arc};
+use std::{fmt::Write as _, io::IsTerminal, path::PathBuf, sync::Arc};
 
 use log::LevelFilter;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -15,9 +15,19 @@ use crate::{
         solana_logs::SolanaPubsubLogStream, toml_rules::TomlRuleRepository,
     },
     app::{
-        context::ExecutionContext, logging::init_logging, systemd::maybe_handle_service_command,
+        context::ExecutionContext,
+        errors::{
+            AppError, IngressStartupError, KeypairLoadError, RulebookLoadError, WalletBalanceError,
+        },
+        logging::init_logging,
+        readiness::validate_ingress_readiness,
+        systemd::maybe_handle_service_command,
     },
-    domain::{settings::RuntimeSettings, value_objects::sol_amount::Lamports},
+    domain::{
+        events::RawLogEvent,
+        settings::{NetworkStackMode, RuntimeSettings},
+        value_objects::sol_amount::Lamports,
+    },
     ports::{fpga_feed::FpgaFeedPort, log_stream::LogStreamPort, network_path::NetworkPathPort},
     slices::{
         config_sync::service::{ConfigSyncService, load_rulebook},
@@ -36,7 +46,7 @@ pub async fn run() {
     }
 }
 
-async fn run_inner() -> Result<(), String> {
+async fn run_inner() -> Result<(), AppError> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if maybe_handle_service_command(&args)? {
         return Ok(());
@@ -59,19 +69,36 @@ async fn run_inner() -> Result<(), String> {
         return Ok(());
     }
 
-    let keypair = Arc::new(load_keypair(&settings.keypair_path).await?);
-    let rpc = Arc::new(RpcClient::new(settings.rpc_url.clone()));
-
     let network_path = NetworkPathProfile::from_settings(&settings);
     let fpga_feed = FpgaFeedAdapter::new(
         settings.fpga_vendor.as_str().to_owned(),
         settings.fpga_verbose,
+    )
+    .with_ingress_mode(settings.fpga_ingress_mode)
+    .with_direct_device_path(settings.fpga_direct_device_path.as_str().to_owned())
+    .with_dma_socket_path(settings.fpga_dma_socket_path.as_str().to_owned());
+    let kernel_bypass_stream = SolanaPubsubLogStream::kernel_bypass(
+        settings.wss_url.as_str().to_owned(),
+        settings.kernel_tcp_bypass_engine,
+        settings.kernel_bypass_socket_path.as_str().to_owned(),
     );
+    let standard_tcp_stream =
+        SolanaPubsubLogStream::standard_tcp(settings.wss_url.as_str().to_owned());
+
+    validate_ingress_readiness(
+        &network_path,
+        &fpga_feed,
+        &kernel_bypass_stream,
+        &standard_tcp_stream,
+    )?;
+
+    let keypair = Arc::new(load_keypair(&settings.keypair_path).await?);
+    let rpc = Arc::new(RpcClient::new(settings.rpc_url.clone()));
 
     let repository = Arc::new(TomlRuleRepository::new(settings.config_path.clone()));
     let initial_rulebook = load_rulebook(repository.as_ref(), true)
         .await
-        .map_err(|error| format!("Failed to read rules: {}", error))?;
+        .map_err(|source| RulebookLoadError::Read { source })?;
 
     let (rulebook_tx, rulebook_rx) = watch::channel(Arc::clone(&initial_rulebook));
 
@@ -86,55 +113,19 @@ async fn run_inner() -> Result<(), String> {
         .get_balance(&keypair.pubkey())
         .await
         .map(|lamports| Lamports::new(lamports).as_sol_string())
-        .map_err(|error| format!("Failed to read wallet balance: {}", error))?;
+        .map_err(|source| WalletBalanceError::Read { source })?;
 
     let mint_rules = initial_rulebook.mint_log_lines();
     let deployer_rules = initial_rulebook.deployer_log_lines();
-    let mints_string = format_rules(&mint_rules);
-    let deployers_string = format_rules(&deployer_rules);
-
-    log::info!(
-        "Settings: \
-\n\tWallet: {}\
-\n\tWallet Balance: {} SOL\
-\n\tPRIORITY_FEES: {} µLamports\
-\n\tMINTS:\
-\t\t{}\
-\n\tDEPLOYERS:\
-\t\t{}\
-\n\tTX_SUBMISSION_MODE: {}\
-\n\tJITO_URL: {}\
-\n\tRPC_URL: {}\
-\n\tWSS_URL: {}\
-\n\tNETWORK_STACK_MODE: {}\
-\n\tNETWORK_PATH: {}\
-\n\tKERNEL_TCP_BYPASS: {}\
-\n\tFPGA_ENABLED: {}\
-\n\tTELEMETRY_ENABLED: {}",
-        keypair.pubkey(),
-        balance,
-        settings.priority_fees.as_u64(),
-        mints_string,
-        deployers_string,
-        settings.tx_submission_mode.as_str(),
-        settings.jito_url,
-        settings.rpc_url,
-        settings.wss_url.as_str(),
-        network_path.mode().as_str(),
-        network_path.describe(),
-        network_path.kernel_bypass_enabled(),
-        network_path.fpga_enabled(),
-        settings.telemetry_enabled,
+    log_runtime_settings(
+        &settings,
+        &network_path,
+        &keypair.pubkey(),
+        &balance,
+        &mint_rules,
+        &deployer_rules,
     );
-
-    if settings.fpga_enabled {
-        log::info!(
-            "FPGA_FEED: {} (vendor={}, verbose={})",
-            fpga_feed.describe(),
-            fpga_feed.vendor(),
-            fpga_feed.verbose(),
-        );
-    }
+    maybe_log_fpga_feed(&settings, &fpga_feed);
 
     let context = Arc::new(ExecutionContext {
         priority_fees: settings.priority_fees.as_u64(),
@@ -154,71 +145,13 @@ async fn run_inner() -> Result<(), String> {
     ));
 
     let (events_tx, events_rx) = mpsc::unbounded_channel();
-    let kernel_bypass_stream = SolanaPubsubLogStream::kernel_bypass(
-        settings.wss_url.as_str().to_owned(),
-        settings.kernel_tcp_bypass_engine,
-        settings.kernel_bypass_socket_path.as_str().to_owned(),
-    );
-    let standard_tcp_stream =
-        SolanaPubsubLogStream::standard_tcp(settings.wss_url.as_str().to_owned());
-
-    let mut stream_started = false;
-
-    if settings.fpga_enabled {
-        match fpga_feed.spawn_stream(events_tx.clone()) {
-            Ok(()) => {
-                log::info!(
-                    "Ingress path selected: FPGA DMA ring -> strategy events (zero-copy frame parse)"
-                );
-                stream_started = true;
-            }
-            Err(error) => {
-                log::warn!(
-                    "FPGA ingress unavailable: {}. Continuing failover chain.",
-                    error
-                );
-            }
-        }
-    }
-
-    if !stream_started && network_path.kernel_bypass_enabled() {
-        match kernel_bypass_stream.spawn_stream(events_tx.clone()) {
-            Ok(()) => {
-                log::info!(
-                    "Ingress path selected: {} -> strategy events",
-                    kernel_bypass_stream.path_name()
-                );
-                stream_started = true;
-            }
-            Err(error) => {
-                log::warn!(
-                    "Kernel bypass ingress unavailable: {}. Falling back to standard tcp path.",
-                    error
-                );
-            }
-        }
-    }
-
-    if !stream_started {
-        standard_tcp_stream
-            .spawn_stream(events_tx)
-            .map_err(|error| {
-                format!(
-                    "Failed to start {} ingress: {}",
-                    standard_tcp_stream.path_name(),
-                    error
-                )
-            })?;
-        log::info!(
-            "Ingress path selected: {} -> strategy events",
-            standard_tcp_stream.path_name()
-        );
-        stream_started = true;
-    }
-
-    if !stream_started {
-        return Err("No ingress path could be started".to_owned());
-    }
+    start_ingress_stream(
+        &network_path,
+        &fpga_feed,
+        &kernel_bypass_stream,
+        &standard_tcp_stream,
+        events_tx,
+    )?;
 
     let engine = SniperEngine::new(context, events_rx, rulebook_rx, telemetry);
     engine.run().await;
@@ -226,22 +159,136 @@ async fn run_inner() -> Result<(), String> {
     Ok(())
 }
 
-async fn load_keypair(path: &str) -> Result<Keypair, String> {
+fn log_runtime_settings(
+    settings: &RuntimeSettings,
+    network_path: &NetworkPathProfile,
+    wallet: &solana_sdk::pubkey::Pubkey,
+    balance: &str,
+    mint_rules: &[String],
+    deployer_rules: &[String],
+) {
+    let mints_string = format_rules(mint_rules);
+    let deployers_string = format_rules(deployer_rules);
+    log::info!(
+        "Settings: \
+\n\tWallet: {}\
+\n\tWallet Balance: {} SOL\
+\n\tPRIORITY_FEES: {} µLamports\
+\n\tMINTS:\
+\t\t{}\
+\n\tDEPLOYERS:\
+\t\t{}\
+\n\tTX_SUBMISSION_MODE: {}\
+\n\tJITO_URL: {}\
+\n\tRPC_URL: {}\
+\n\tWSS_URL: {}\
+\n\tNETWORK_STACK_MODE: {}\
+\n\tNETWORK_PATH: {}\
+\n\tKERNEL_TCP_BYPASS: {}\
+\n\tFPGA_ENABLED: {}\
+\n\tFPGA_INGRESS_MODE: {}\
+\n\tFPGA_DIRECT_DEVICE_PATH: {}\
+\n\tFPGA_DMA_SOCKET_PATH: {}\
+\n\tTELEMETRY_ENABLED: {}",
+        wallet,
+        balance,
+        settings.priority_fees.as_u64(),
+        mints_string,
+        deployers_string,
+        settings.tx_submission_mode.as_str(),
+        settings.jito_url,
+        settings.rpc_url,
+        settings.wss_url.as_str(),
+        network_path.mode().as_str(),
+        network_path.describe(),
+        network_path.kernel_bypass_enabled(),
+        network_path.fpga_enabled(),
+        settings.fpga_ingress_mode.as_str(),
+        settings.fpga_direct_device_path.as_str(),
+        settings.fpga_dma_socket_path.as_str(),
+        settings.telemetry_enabled,
+    );
+}
+
+fn maybe_log_fpga_feed(settings: &RuntimeSettings, fpga_feed: &FpgaFeedAdapter) {
+    if settings.fpga_enabled {
+        log::info!(
+            "FPGA_FEED: {} (vendor={}, verbose={})",
+            fpga_feed.describe(),
+            fpga_feed.vendor(),
+            fpga_feed.verbose(),
+        );
+    }
+}
+
+fn start_ingress_stream(
+    network_path: &NetworkPathProfile,
+    fpga_feed: &FpgaFeedAdapter,
+    kernel_bypass_stream: &SolanaPubsubLogStream,
+    standard_tcp_stream: &SolanaPubsubLogStream,
+    events_tx: mpsc::UnboundedSender<RawLogEvent>,
+) -> Result<(), IngressStartupError> {
+    match network_path.mode() {
+        NetworkStackMode::Fpga => {
+            fpga_feed
+                .spawn_stream(events_tx)
+                .map_err(|source| IngressStartupError::Fpga { source })?;
+            log::info!(
+                "Ingress path selected: FPGA DMA ring -> strategy events (zero-copy frame parse)"
+            );
+        }
+        NetworkStackMode::KernelBypass => {
+            kernel_bypass_stream
+                .spawn_stream(events_tx)
+                .map_err(|source| IngressStartupError::KernelBypass { source })?;
+            log::info!(
+                "Ingress path selected: {} -> strategy events",
+                kernel_bypass_stream.path_name()
+            );
+        }
+        NetworkStackMode::StandardTcp => {
+            standard_tcp_stream
+                .spawn_stream(events_tx)
+                .map_err(|source| IngressStartupError::StandardTcp { source })?;
+            log::info!(
+                "Ingress path selected: {} -> strategy events",
+                standard_tcp_stream.path_name()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_keypair(path: &str) -> Result<Keypair, KeypairLoadError> {
+    let keypair_path = PathBuf::from(path);
     let mut keypair_file = File::open(path)
         .await
-        .map_err(|error| format!("Failed to open keypair file: {}", error))?;
+        .map_err(|source| KeypairLoadError::Open {
+            path: keypair_path.clone(),
+            source,
+        })?;
 
     let mut contents = String::new();
     keypair_file
         .read_to_string(&mut contents)
         .await
-        .map_err(|error| format!("Failed to read keypair file: {}", error))?;
+        .map_err(|source| KeypairLoadError::Read {
+            path: keypair_path.clone(),
+            source,
+        })?;
 
-    let keypair_bytes = serde_json::from_str::<Vec<u8>>(&contents)
-        .map_err(|error| format!("Failed to parse keypair json: {}", error))?;
+    let keypair_bytes = serde_json::from_str::<Vec<u8>>(&contents).map_err(|source| {
+        KeypairLoadError::ParseJson {
+            path: keypair_path.clone(),
+            source,
+        }
+    })?;
 
-    Keypair::try_from(keypair_bytes.as_slice())
-        .map_err(|error| format!("Invalid keypair bytes: {}", error))
+    Keypair::try_from(keypair_bytes.as_slice()).map_err(|source| KeypairLoadError::InvalidBytes {
+        path: keypair_path,
+        source: Box::new(source),
+    })
 }
 
 fn resolve_level_filter() -> LevelFilter {

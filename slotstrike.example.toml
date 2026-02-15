@@ -13,6 +13,12 @@ kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
 fpga_enabled = false
 fpga_verbose = false
 fpga_vendor = "generic"
+# supported: "auto", "mock_dma", "direct_device", "external_socket"
+fpga_ingress_mode = "auto"
+# used when fpga_enabled=true and fpga_ingress_mode resolves to direct_device
+fpga_direct_device_path = "/dev/slotstrike-fpga0"
+# used when fpga_enabled=true and fpga_ingress_mode=external_socket
+fpga_dma_socket_path = "/tmp/slotstrike-fpga-dma.sock"
 replay_benchmark = false
 replay_event_count = 50000
 replay_burst_size = 512

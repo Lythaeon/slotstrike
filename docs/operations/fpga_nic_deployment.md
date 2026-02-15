@@ -46,6 +46,9 @@ ethtool -i <nic_ifname>
 ```bash
 fpga_enabled = true
 fpga_vendor = "<vendor_name>"
+fpga_ingress_mode = "direct_device"
+fpga_direct_device_path = "/dev/slotstrike-fpga0"
+fpga_dma_socket_path = "/tmp/slotstrike-fpga-dma.sock"
 fpga_verbose = false
 ```
 

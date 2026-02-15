@@ -43,6 +43,43 @@ impl Display for KernelBypassEngine {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FpgaIngressMode {
+    Auto,
+    MockDma,
+    DirectDevice,
+    ExternalSocket,
+}
+
+impl FpgaIngressMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "auto" => Some(Self::Auto),
+            "mock_dma" => Some(Self::MockDma),
+            "direct_device" => Some(Self::DirectDevice),
+            "external_socket" => Some(Self::ExternalSocket),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::MockDma => "mock_dma",
+            Self::DirectDevice => "direct_device",
+            Self::ExternalSocket => "external_socket",
+        }
+    }
+}
+
+impl Display for FpgaIngressMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TxSubmissionMode {
     Jito,
     Direct,
@@ -178,8 +215,8 @@ impl TryFrom<&str> for NonEmptyText {
 #[cfg(test)]
 mod tests {
     use super::{
-        KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize,
-        ReplayEventCount, TxSubmissionMode,
+        FpgaIngressMode, KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports,
+        ReplayBurstSize, ReplayEventCount, TxSubmissionMode,
     };
 
     #[test]
@@ -209,6 +246,28 @@ mod tests {
     #[test]
     fn rejects_invalid_kernel_bypass_engine() {
         assert_eq!(KernelBypassEngine::parse("invalid"), None);
+    }
+
+    #[test]
+    fn parses_fpga_ingress_mode() {
+        assert_eq!(FpgaIngressMode::parse("auto"), Some(FpgaIngressMode::Auto));
+        assert_eq!(
+            FpgaIngressMode::parse("mock_dma"),
+            Some(FpgaIngressMode::MockDma)
+        );
+        assert_eq!(
+            FpgaIngressMode::parse("direct_device"),
+            Some(FpgaIngressMode::DirectDevice)
+        );
+        assert_eq!(
+            FpgaIngressMode::parse("EXTERNAL_SOCKET"),
+            Some(FpgaIngressMode::ExternalSocket)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_fpga_ingress_mode() {
+        assert_eq!(FpgaIngressMode::parse("invalid"), None);
     }
 
     #[test]

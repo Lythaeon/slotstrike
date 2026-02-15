@@ -9,6 +9,7 @@ use std::{
 use chrono::Local;
 use colored::Colorize;
 use log::{Level, LevelFilter, Metadata, Record};
+use thiserror::Error;
 use tokio::fs;
 
 #[derive(Debug)]
@@ -120,11 +121,20 @@ impl log::Log for AsyncLogger {
     fn flush(&self) {}
 }
 
-pub async fn init_logging(level_filter: LevelFilter) -> Result<(), String> {
+#[derive(Debug, Error)]
+pub enum LoggingError {
+    #[error("failed to create log directory")]
+    CreateLogDirectory {
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+pub async fn init_logging(level_filter: LevelFilter) -> Result<(), LoggingError> {
     let log_dir = PathBuf::from("log");
     fs::create_dir_all(&log_dir)
         .await
-        .map_err(|error| format!("Failed to create log directory: {}", error))?;
+        .map_err(|source| LoggingError::CreateLogDirectory { source })?;
 
     let log_path = log_dir.join("output.ans");
     let (sender, receiver) = mpsc::channel::<AsyncLogEvent>();
