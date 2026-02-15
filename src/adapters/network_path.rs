@@ -62,8 +62,8 @@ mod tests {
         domain::{
             settings::{NetworkStackMode, RuntimeSettings},
             value_objects::{
-                KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize,
-                ReplayEventCount, TxSubmissionMode,
+                FpgaIngressMode, KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports,
+                ReplayBurstSize, ReplayEventCount, TxSubmissionMode,
             },
         },
         ports::network_path::NetworkPathPort,
@@ -86,6 +86,11 @@ mod tests {
             fpga_enabled: mode == NetworkStackMode::Fpga,
             fpga_verbose: false,
             fpga_vendor: NonEmptyText::try_from("exanic".to_owned())?,
+            fpga_ingress_mode: FpgaIngressMode::DirectDevice,
+            fpga_direct_device_path: NonEmptyText::try_from("/dev/slotstrike-fpga0".to_owned())?,
+            fpga_dma_socket_path: NonEmptyText::try_from(
+                "/tmp/slotstrike-fpga-dma.sock".to_owned(),
+            )?,
             network_stack_mode: mode,
             run_replay_benchmark: false,
             replay_event_count: ReplayEventCount::new(50_000)?,

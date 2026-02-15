@@ -116,12 +116,8 @@ impl RuleRepository for TomlRuleRepository {
         file_type: &str,
         initial: bool,
     ) -> Result<Vec<SnipeRule>, io::Error> {
-        let config = load_sniper_config_file(&self.config_path).map_err(|message| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("config parse failed: {}", message),
-            )
-        })?;
+        let config = load_sniper_config_file(&self.config_path)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
 
         let expected_kind = match file_type {
             "MINTS" => RuleKind::Mint,

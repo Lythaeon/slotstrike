@@ -1,12 +1,149 @@
 use std::env;
+use thiserror::Error;
 
 use crate::domain::{
-    config::{SniperConfigFile, load_sniper_config_file},
+    config::{ConfigError, SniperConfigFile, load_sniper_config_file},
     value_objects::{
-        KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize,
-        ReplayEventCount, TxSubmissionMode,
+        FpgaIngressMode, KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports,
+        ReplayBurstSize, ReplayEventCount, TxSubmissionMode,
     },
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredRuntimeField {
+    KeypairPath,
+    RpcUrl,
+    WssUrl,
+    JitoUrl,
+}
+
+impl RequiredRuntimeField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::KeypairPath => "keypair_path",
+            Self::RpcUrl => "rpc_url",
+            Self::WssUrl => "wss_url",
+            Self::JitoUrl => "jito_url",
+        }
+    }
+}
+
+impl std::fmt::Display for RequiredRuntimeField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NonEmptyRuntimeField {
+    KernelBypassSocketPath,
+    FpgaVendor,
+    FpgaDirectDevicePath,
+    FpgaDmaSocketPath,
+    WssUrl,
+}
+
+impl NonEmptyRuntimeField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::KernelBypassSocketPath => "kernel_bypass_socket_path",
+            Self::FpgaVendor => "fpga_vendor",
+            Self::FpgaDirectDevicePath => "fpga_direct_device_path",
+            Self::FpgaDmaSocketPath => "fpga_dma_socket_path",
+            Self::WssUrl => "wss_url",
+        }
+    }
+}
+
+impl std::fmt::Display for NonEmptyRuntimeField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayField {
+    ReplayEventCount,
+    ReplayBurstSize,
+}
+
+impl ReplayField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReplayEventCount => "replay_event_count",
+            Self::ReplayBurstSize => "replay_burst_size",
+        }
+    }
+}
+
+impl std::fmt::Display for ReplayField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TelemetryField {
+    SampleCapacity,
+    ReportPeriodSecs,
+}
+
+impl TelemetryField {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SampleCapacity => "telemetry.sample_capacity",
+            Self::ReportPeriodSecs => "telemetry.report_period_secs",
+        }
+    }
+}
+
+impl std::fmt::Display for TelemetryField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum SettingsError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Replay(#[from] ReplaySettingsError),
+    #[error(transparent)]
+    Runtime(#[from] RuntimeSettingsError),
+    #[error(transparent)]
+    Telemetry(#[from] TelemetrySettingsError),
+}
+
+#[derive(Debug, Error)]
+pub enum ReplaySettingsError {
+    #[error("{field} must be greater than 0")]
+    MustBeGreaterThanZero { field: ReplayField },
+}
+
+#[derive(Debug, Error)]
+pub enum RuntimeSettingsError {
+    #[error(
+        "invalid kernel_tcp_bypass_engine; supported values: af_xdp, dpdk, openonload, af_xdp_or_dpdk_external"
+    )]
+    InvalidKernelBypassEngine,
+    #[error(
+        "invalid fpga_ingress_mode; supported values: auto, mock_dma, direct_device, external_socket"
+    )]
+    InvalidFpgaIngressMode,
+    #[error("invalid tx_submission_mode; supported values: jito, direct")]
+    InvalidTxSubmissionMode,
+    #[error("missing {field} in runtime config")]
+    MissingRuntimeField { field: RequiredRuntimeField },
+    #[error("{field} must not be empty")]
+    EmptyRuntimeField { field: NonEmptyRuntimeField },
+}
+
+#[derive(Debug, Error)]
+pub enum TelemetrySettingsError {
+    #[error("{field} must be greater than 0 when telemetry.enabled=true")]
+    InvalidEnabledValue { field: TelemetryField },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkStackMode {
@@ -41,6 +178,9 @@ pub struct RuntimeSettings {
     pub fpga_enabled: bool,
     pub fpga_verbose: bool,
     pub fpga_vendor: NonEmptyText,
+    pub fpga_ingress_mode: FpgaIngressMode,
+    pub fpga_direct_device_path: NonEmptyText,
+    pub fpga_dma_socket_path: NonEmptyText,
     pub network_stack_mode: NetworkStackMode,
     pub run_replay_benchmark: bool,
     pub replay_event_count: ReplayEventCount,
@@ -52,12 +192,12 @@ pub struct RuntimeSettings {
 }
 
 impl RuntimeSettings {
-    pub fn from_args() -> Result<Self, String> {
+    pub fn from_args() -> Result<Self, SettingsError> {
         let args = env::args().skip(1).collect::<Vec<_>>();
         Self::from_cli_args(&args)
     }
 
-    pub(crate) fn from_cli_args(args: &[String]) -> Result<Self, String> {
+    pub(crate) fn from_cli_args(args: &[String]) -> Result<Self, SettingsError> {
         let config_path =
             arg_value(args, "--config").unwrap_or_else(|| "slotstrike.toml".to_owned());
         let parsed_config = load_sniper_config_file(&config_path)?;
@@ -68,40 +208,57 @@ impl RuntimeSettings {
         args: &[String],
         config_path: String,
         parsed_config: &SniperConfigFile,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, SettingsError> {
         let runtime = &parsed_config.runtime;
         let telemetry = &parsed_config.telemetry;
 
         let run_replay_benchmark = arg_flag(args, "--replay-benchmark") || runtime.replay_benchmark;
-        let replay_event_count = ReplayEventCount::new(runtime.replay_event_count)
-            .map_err(|message| format!("replay_event_count {}", message))?;
-        let replay_burst_size = ReplayBurstSize::new(runtime.replay_burst_size)
-            .map_err(|message| format!("replay_burst_size {}", message))?;
+        let replay_event_count =
+            ReplayEventCount::new(runtime.replay_event_count).map_err(|_source| {
+                ReplaySettingsError::MustBeGreaterThanZero {
+                    field: ReplayField::ReplayEventCount,
+                }
+            })?;
+        let replay_burst_size =
+            ReplayBurstSize::new(runtime.replay_burst_size).map_err(|_source| {
+                ReplaySettingsError::MustBeGreaterThanZero {
+                    field: ReplayField::ReplayBurstSize,
+                }
+            })?;
 
         let kernel_tcp_bypass_enabled = runtime.kernel_tcp_bypass;
         let kernel_tcp_bypass_engine = KernelBypassEngine::parse(&runtime.kernel_tcp_bypass_engine)
-            .ok_or_else(|| {
-                format!(
-                    "Invalid kernel_tcp_bypass_engine '{}'. Supported values: af_xdp, dpdk, openonload, af_xdp_or_dpdk_external",
-                    runtime.kernel_tcp_bypass_engine
-                )
-            })?;
-        let kernel_bypass_socket_path =
-            NonEmptyText::try_from(runtime.kernel_bypass_socket_path.clone())
-                .map_err(|_error| "kernel_bypass_socket_path must not be empty".to_owned())?;
+            .ok_or(RuntimeSettingsError::InvalidKernelBypassEngine)?;
+        let kernel_bypass_socket_path = NonEmptyText::try_from(
+            runtime.kernel_bypass_socket_path.clone(),
+        )
+        .map_err(|_source| RuntimeSettingsError::EmptyRuntimeField {
+            field: NonEmptyRuntimeField::KernelBypassSocketPath,
+        })?;
 
-        let tx_submission_mode =
-            TxSubmissionMode::parse(&runtime.tx_submission_mode).ok_or_else(|| {
-                format!(
-                    "Invalid tx_submission_mode '{}'",
-                    runtime.tx_submission_mode
-                )
-            })?;
+        let tx_submission_mode = TxSubmissionMode::parse(&runtime.tx_submission_mode)
+            .ok_or(RuntimeSettingsError::InvalidTxSubmissionMode)?;
 
         let fpga_enabled = arg_flag(args, "--fpga") || runtime.fpga_enabled;
         let fpga_verbose = arg_flag(args, "--fpga-verbose") || runtime.fpga_verbose;
-        let fpga_vendor = NonEmptyText::try_from(runtime.fpga_vendor.clone())
-            .map_err(|_error| "fpga_vendor must not be empty".to_owned())?;
+        let fpga_vendor =
+            NonEmptyText::try_from(runtime.fpga_vendor.clone()).map_err(|_source| {
+                RuntimeSettingsError::EmptyRuntimeField {
+                    field: NonEmptyRuntimeField::FpgaVendor,
+                }
+            })?;
+        let fpga_ingress_mode = FpgaIngressMode::parse(&runtime.fpga_ingress_mode)
+            .ok_or(RuntimeSettingsError::InvalidFpgaIngressMode)?;
+        let fpga_direct_device_path =
+            NonEmptyText::try_from(runtime.fpga_direct_device_path.clone()).map_err(|_source| {
+                RuntimeSettingsError::EmptyRuntimeField {
+                    field: NonEmptyRuntimeField::FpgaDirectDevicePath,
+                }
+            })?;
+        let fpga_dma_socket_path = NonEmptyText::try_from(runtime.fpga_dma_socket_path.clone())
+            .map_err(|_source| RuntimeSettingsError::EmptyRuntimeField {
+                field: NonEmptyRuntimeField::FpgaDmaSocketPath,
+            })?;
 
         let network_stack_mode = if fpga_enabled {
             NetworkStackMode::Fpga
@@ -113,13 +270,22 @@ impl RuntimeSettings {
 
         if !run_replay_benchmark {
             if runtime.keypair_path.trim().is_empty() {
-                return Err("Missing keypair_path in runtime config".to_owned());
+                return Err(RuntimeSettingsError::MissingRuntimeField {
+                    field: RequiredRuntimeField::KeypairPath,
+                }
+                .into());
             }
             if runtime.rpc_url.trim().is_empty() {
-                return Err("Missing rpc_url in runtime config".to_owned());
+                return Err(RuntimeSettingsError::MissingRuntimeField {
+                    field: RequiredRuntimeField::RpcUrl,
+                }
+                .into());
             }
             if runtime.wss_url.trim().is_empty() {
-                return Err("Missing wss_url in runtime config".to_owned());
+                return Err(RuntimeSettingsError::MissingRuntimeField {
+                    field: RequiredRuntimeField::WssUrl,
+                }
+                .into());
             }
         }
 
@@ -132,7 +298,9 @@ impl RuntimeSettings {
                 .jito_url
                 .clone()
                 .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "Missing jito_url for jito submission mode".to_owned())?
+                .ok_or(RuntimeSettingsError::MissingRuntimeField {
+                    field: RequiredRuntimeField::JitoUrl,
+                })?
         } else {
             runtime.jito_url.clone().unwrap_or_else(|| rpc_url.clone())
         };
@@ -142,20 +310,23 @@ impl RuntimeSettings {
         } else {
             runtime.wss_url.clone()
         };
-        let wss_url = NonEmptyText::try_from(wss_url_raw)
-            .map_err(|_error| "wss_url must not be empty".to_owned())?;
+        let wss_url = NonEmptyText::try_from(wss_url_raw).map_err(|_source| {
+            RuntimeSettingsError::EmptyRuntimeField {
+                field: NonEmptyRuntimeField::WssUrl,
+            }
+        })?;
 
         if telemetry.enabled && telemetry.sample_capacity == 0 {
-            return Err(
-                "telemetry.sample_capacity must be greater than 0 when telemetry.enabled=true"
-                    .to_owned(),
-            );
+            return Err(TelemetrySettingsError::InvalidEnabledValue {
+                field: TelemetryField::SampleCapacity,
+            }
+            .into());
         }
         if telemetry.enabled && telemetry.report_period_secs == 0 {
-            return Err(
-                "telemetry.report_period_secs must be greater than 0 when telemetry.enabled=true"
-                    .to_owned(),
-            );
+            return Err(TelemetrySettingsError::InvalidEnabledValue {
+                field: TelemetryField::ReportPeriodSecs,
+            }
+            .into());
         }
 
         Ok(Self {
@@ -172,6 +343,9 @@ impl RuntimeSettings {
             fpga_enabled,
             fpga_verbose,
             fpga_vendor,
+            fpga_ingress_mode,
+            fpga_direct_device_path,
+            fpga_dma_socket_path,
             network_stack_mode,
             run_replay_benchmark,
             replay_event_count,
@@ -199,11 +373,11 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
 mod tests {
     use super::{NetworkStackMode, RuntimeSettings};
     use crate::domain::{
-        config::{SniperConfigFile, parse_sniper_config_toml},
-        value_objects::{KernelBypassEngine, TxSubmissionMode},
+        config::{ConfigError, SniperConfigFile, parse_sniper_config_toml},
+        value_objects::{FpgaIngressMode, KernelBypassEngine, TxSubmissionMode},
     };
 
-    fn minimal_config() -> Result<SniperConfigFile, String> {
+    fn minimal_config() -> Result<SniperConfigFile, ConfigError> {
         parse_sniper_config_toml(
             r#"
 [runtime]
@@ -248,6 +422,7 @@ report_period_secs = 15
                     settings.kernel_tcp_bypass_engine,
                     KernelBypassEngine::AfXdpOrDpdkExternal
                 );
+                assert_eq!(settings.fpga_ingress_mode, FpgaIngressMode::Auto);
                 assert_eq!(settings.tx_submission_mode, TxSubmissionMode::Jito);
             }
         }
@@ -376,6 +551,38 @@ replay_burst_size = 512
                 );
                 assert_eq!(settings.network_stack_mode, NetworkStackMode::KernelBypass);
             }
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_fpga_ingress_mode() {
+        let config = parse_sniper_config_toml(
+            r#"
+[runtime]
+keypair_path = "keypair.json"
+rpc_url = "https://rpc.example"
+wss_url = "wss://wss.example"
+priority_fees = 1000
+tx_submission_mode = "direct"
+kernel_tcp_bypass = true
+kernel_tcp_bypass_engine = "af_xdp"
+fpga_enabled = false
+fpga_verbose = false
+fpga_vendor = "generic"
+fpga_ingress_mode = "invalid"
+replay_benchmark = false
+replay_event_count = 50000
+replay_burst_size = 512
+"#,
+        );
+        assert!(config.is_ok());
+        if let Ok(config) = config {
+            let settings = RuntimeSettings::from_parsed_config(
+                &Vec::new(),
+                "slotstrike.toml".to_owned(),
+                &config,
+            );
+            assert!(settings.is_err());
         }
     }
 

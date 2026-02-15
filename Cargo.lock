@@ -3225,6 +3225,7 @@ dependencies = [
  "spl-associated-token-account",
  "spl-token",
  "spl-token-client",
+ "thiserror 2.0.18",
  "tokio",
  "toml",
  "trait-variant",

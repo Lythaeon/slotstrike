@@ -6,6 +6,8 @@ use std::{
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use solana_client::{
@@ -67,21 +69,35 @@ impl SolanaPubsubLogStream {
         }
     }
 
-    fn validate_ready(&self) -> Result<(), LogStreamError> {
+    fn validate_startup_ready(&self) -> Result<(), LogStreamError> {
         if !self.wss_url.starts_with("wss://") && !self.wss_url.starts_with("ws://") {
-            return Err(LogStreamError::Unavailable(format!(
-                "invalid websocket url '{}' for {} path",
-                self.wss_url, self.path_name
-            )));
+            return Err(LogStreamError::InvalidWebsocketUrl {
+                url: self.wss_url.clone(),
+                path: self.path_name,
+            });
         }
 
         if self.source == IngressSource::KernelBypass && self.kernel_bypass_engine.is_none() {
-            return Err(LogStreamError::Unavailable(
-                "kernel bypass path missing engine selection".to_owned(),
-            ));
+            return Err(LogStreamError::MissingKernelBypassEngine);
+        }
+
+        if self.requires_openonload_runtime() && !openonload_runtime_ready() {
+            return Err(LogStreamError::OpenOnloadRuntimeInactive);
+        }
+
+        if self.source == IngressSource::KernelBypass && self.prefers_external_bypass_feed() {
+            self.validate_external_bypass_socket_ready()?;
         }
 
         Ok(())
+    }
+
+    const fn requires_openonload_runtime(&self) -> bool {
+        matches!(self.source, IngressSource::KernelBypass)
+            && matches!(
+                self.kernel_bypass_engine,
+                Some(KernelBypassEngine::OpenOnload)
+            )
     }
 
     const fn prefers_external_bypass_feed(&self) -> bool {
@@ -93,6 +109,36 @@ impl SolanaPubsubLogStream {
                     | KernelBypassEngine::AfXdpOrDpdkExternal
             )
         )
+    }
+
+    #[cfg(unix)]
+    fn validate_external_bypass_socket_ready(&self) -> Result<(), LogStreamError> {
+        let socket_path = self.kernel_bypass_socket_path()?;
+        let socket_path_ref = Path::new(&socket_path);
+        if !socket_path_ref.exists() {
+            return Err(LogStreamError::KernelBypassSocketUnavailable {
+                socket_path: PathBuf::from(socket_path_ref),
+            });
+        }
+
+        if UnixStream::connect(socket_path_ref).is_err() {
+            return Err(LogStreamError::KernelBypassSocketUnavailable {
+                socket_path: PathBuf::from(socket_path_ref),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn validate_external_bypass_socket_ready(&self) -> Result<(), LogStreamError> {
+        Err(LogStreamError::ExternalBypassRequiresUnixTarget)
+    }
+
+    fn kernel_bypass_socket_path(&self) -> Result<String, LogStreamError> {
+        self.kernel_bypass_socket_path
+            .clone()
+            .ok_or(LogStreamError::MissingKernelBypassSocketPath)
     }
 
     fn spawn_websocket_stream(&self, sender: mpsc::UnboundedSender<RawLogEvent>) {
@@ -147,16 +193,8 @@ impl SolanaPubsubLogStream {
         &self,
         sender: mpsc::UnboundedSender<RawLogEvent>,
     ) -> Result<(), LogStreamError> {
-        let socket_path = self.kernel_bypass_socket_path.clone().ok_or_else(|| {
-            LogStreamError::Unavailable("Missing kernel bypass socket path".to_owned())
-        })?;
-
-        if UnixStream::connect(&socket_path).is_err() {
-            return Err(LogStreamError::Unavailable(format!(
-                "kernel bypass socket unavailable at '{}' (expected external AF_XDP/DPDK bridge)",
-                socket_path
-            )));
-        }
+        let socket_path = self.kernel_bypass_socket_path()?;
+        self.validate_external_bypass_socket_ready()?;
 
         thread::spawn(move || {
             loop {
@@ -240,9 +278,7 @@ impl SolanaPubsubLogStream {
         &self,
         _sender: mpsc::UnboundedSender<RawLogEvent>,
     ) -> Result<(), LogStreamError> {
-        Err(LogStreamError::Unavailable(
-            "kernel bypass external socket mode requires unix target".to_owned(),
-        ))
+        Err(LogStreamError::ExternalBypassRequiresUnixTarget)
     }
 }
 
@@ -251,11 +287,15 @@ impl LogStreamPort for SolanaPubsubLogStream {
         self.path_name
     }
 
+    fn validate_ready(&self) -> Result<(), LogStreamError> {
+        self.validate_startup_ready()
+    }
+
     fn spawn_stream(
         &self,
         sender: mpsc::UnboundedSender<RawLogEvent>,
     ) -> Result<(), LogStreamError> {
-        self.validate_ready()?;
+        self.validate_startup_ready()?;
 
         if self.source == IngressSource::KernelBypass && self.prefers_external_bypass_feed() {
             return self.spawn_external_bypass_stream(sender);
@@ -266,9 +306,32 @@ impl LogStreamPort for SolanaPubsubLogStream {
     }
 }
 
+fn openonload_runtime_ready() -> bool {
+    openonload_runtime_ready_with(openonload_device_available(), openonload_preload_active())
+}
+
+const fn openonload_runtime_ready_with(device_available: bool, preload_active: bool) -> bool {
+    device_available && preload_active
+}
+
+fn openonload_device_available() -> bool {
+    std::path::Path::new("/dev/onload").exists()
+}
+
+fn openonload_preload_active() -> bool {
+    if let Ok(preload) = std::env::var("LD_PRELOAD") {
+        let normalized = preload.to_ascii_lowercase();
+        if normalized.contains("libonload") || normalized.contains("libcitransport") {
+            return true;
+        }
+    }
+
+    std::env::var("ONLOAD_PRELOAD").is_ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SolanaPubsubLogStream;
+    use super::{SolanaPubsubLogStream, openonload_runtime_ready_with};
     use crate::domain::value_objects::KernelBypassEngine;
     use crate::ports::log_stream::{LogStreamError, LogStreamPort};
     use tokio::sync::mpsc;
@@ -285,7 +348,7 @@ mod tests {
         let started = stream.spawn_stream(sender);
         assert!(started.is_err());
         if let Err(error) = started {
-            assert!(matches!(error, LogStreamError::Unavailable(_)));
+            assert!(matches!(error, LogStreamError::InvalidWebsocketUrl { .. }));
         }
     }
 
@@ -300,5 +363,33 @@ mod tests {
 
         assert_eq!(kernel_stream.path_name(), "kernel_bypass");
         assert_eq!(standard_stream.path_name(), "standard_tcp");
+    }
+
+    #[test]
+    fn openonload_kernel_bypass_startup_reflects_runtime_state() {
+        let stream = SolanaPubsubLogStream::kernel_bypass(
+            "wss://example".to_owned(),
+            KernelBypassEngine::OpenOnload,
+            "/tmp/slotstrike-kernel-bypass.sock".to_owned(),
+        );
+        let (sender, _receiver) = mpsc::unbounded_channel();
+
+        let started = stream.spawn_stream(sender);
+        if super::openonload_runtime_ready() {
+            assert!(started.is_ok());
+        } else {
+            assert!(matches!(
+                started,
+                Err(LogStreamError::OpenOnloadRuntimeInactive)
+            ));
+        }
+    }
+
+    #[test]
+    fn openonload_runtime_requires_device_and_preload() {
+        assert!(!openonload_runtime_ready_with(false, false));
+        assert!(!openonload_runtime_ready_with(true, false));
+        assert!(!openonload_runtime_ready_with(false, true));
+        assert!(openonload_runtime_ready_with(true, true));
     }
 }

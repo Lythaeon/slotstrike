@@ -1,4 +1,6 @@
 use serde::Deserialize;
+use std::path::PathBuf;
+use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SniperConfigFile {
@@ -31,6 +33,12 @@ pub struct RuntimeConfigSection {
     pub fpga_verbose: bool,
     #[serde(default = "default_fpga_vendor")]
     pub fpga_vendor: String,
+    #[serde(default = "default_fpga_ingress_mode")]
+    pub fpga_ingress_mode: String,
+    #[serde(default = "default_fpga_direct_device_path")]
+    pub fpga_direct_device_path: String,
+    #[serde(default = "default_fpga_dma_socket_path")]
+    pub fpga_dma_socket_path: String,
     #[serde(default)]
     pub replay_benchmark: bool,
     #[serde(default = "default_replay_event_count")]
@@ -78,15 +86,33 @@ impl Default for TelemetryConfigSection {
     }
 }
 
-pub fn load_sniper_config_file(path: &str) -> Result<SniperConfigFile, String> {
-    let config_text = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read config file '{}': {}", path, error))?;
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config file at {path}")]
+    ReadConfigFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("invalid slotstrike.toml format")]
+    ParseToml {
+        #[source]
+        source: toml::de::Error,
+    },
+}
+
+pub fn load_sniper_config_file(path: &str) -> Result<SniperConfigFile, ConfigError> {
+    let config_text =
+        std::fs::read_to_string(path).map_err(|source| ConfigError::ReadConfigFile {
+            path: PathBuf::from(path),
+            source,
+        })?;
     parse_sniper_config_toml(&config_text)
 }
 
-pub fn parse_sniper_config_toml(config_text: &str) -> Result<SniperConfigFile, String> {
+pub fn parse_sniper_config_toml(config_text: &str) -> Result<SniperConfigFile, ConfigError> {
     toml::from_str::<SniperConfigFile>(config_text)
-        .map_err(|error| format!("Invalid slotstrike.toml format: {}", error))
+        .map_err(|source| ConfigError::ParseToml { source })
 }
 
 fn default_tx_submission_mode() -> String {
@@ -107,6 +133,18 @@ fn default_kernel_bypass_socket_path() -> String {
 
 fn default_fpga_vendor() -> String {
     "generic".to_owned()
+}
+
+fn default_fpga_ingress_mode() -> String {
+    "auto".to_owned()
+}
+
+fn default_fpga_direct_device_path() -> String {
+    "/dev/slotstrike-fpga0".to_owned()
+}
+
+fn default_fpga_dma_socket_path() -> String {
+    "/tmp/slotstrike-fpga-dma.sock".to_owned()
 }
 
 const fn default_replay_event_count() -> usize {

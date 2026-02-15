@@ -39,6 +39,11 @@ jito_url = "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions?
 kernel_tcp_bypass = true
 kernel_tcp_bypass_engine = "af_xdp_or_dpdk_external"
 kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
+fpga_enabled = false
+fpga_vendor = "generic"
+fpga_ingress_mode = "auto"
+fpga_direct_device_path = "/dev/slotstrike-fpga0"
+fpga_dma_socket_path = "/tmp/slotstrike-fpga-dma.sock"
 
 [telemetry]
 enabled = true
@@ -76,7 +81,12 @@ slippage_pct = "1"
 - `kernel_bypass_socket_path`: unix socket for external AF_XDP/DPDK bypass feed bridge.
 - `fpga_enabled`: force FPGA ingress if available.
 - `fpga_verbose`: verbose FPGA diagnostics.
-- `fpga_vendor`: vendor label.
+- `fpga_vendor`: `mock_dma`, `generic`, `exanic`, `xilinx`, `amd`, `solarflare`, or `napatech`.
+- `fpga_ingress_mode`: `auto`, `mock_dma`, `direct_device`, or `external_socket`.
+- `fpga_direct_device_path`: direct vendor-device ingest path (character device/FIFO/file) used by `direct_device`.
+- `fpga_dma_socket_path`: unix socket for `external_socket` bridge mode.
+- direct frame wire format: one frame per line. Preferred JSON: `{"payload_base64":"...","hardware_timestamp_ns":123}`.
+  Alternate wire format: base64 payload-only line.
 - `replay_benchmark`: run synthetic replay instead of live strategy.
 - `replay_event_count`: replay event count.
 - `replay_burst_size`: replay burst size.
@@ -97,6 +107,17 @@ slippage_pct = "1"
 - `slippage_pct`: percent string.
 
 Note: monetary/percentage rule values are strings and parsed via fixed-point/integer-safe logic to avoid float drift.
+
+## FPGA Direct Mode
+
+For production users integrating vendor devices directly:
+
+1. Set `fpga_enabled = true`.
+2. Set `fpga_ingress_mode = "direct_device"`.
+3. Set `fpga_direct_device_path` to your driver/device export path.
+
+Startup now fails fast if the direct device path is missing or not readable.
+Full operator contract and wire format: `docs/operations/fpga_direct_ingress.md`.
 
 Multiple mint addresses:
 
@@ -169,6 +190,7 @@ Useful runtime flags:
 - `--fpga-verbose`
 
 If you set `kernel_tcp_bypass_engine = "openonload"`, run under Onload (or equivalent preload setup) to activate acceleration.
+If you set `fpga_enabled = true`, startup now fails fast unless FPGA prerequisites are available for the selected mode.
 
 Note: ingress feed transport and tx submission transport are separate concerns.  
 Ingress can use FPGA/kernel-bypass/websocket, while tx submission uses `direct` RPC or `jito` based on `tx_submission_mode`.
@@ -260,6 +282,7 @@ Tune with:
 - On-call playbook: `docs/runbooks/oncall.md`
 - Contribution guide: `CONTRIBUTING.md`
 - FPGA NIC deployment/PTP/rollback: `docs/operations/fpga_nic_deployment.md`
+- FPGA direct ingress contract: `docs/operations/fpga_direct_ingress.md`
 
 ## Disclaimer
 
