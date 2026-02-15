@@ -2,47 +2,41 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag to build/publish (for example: v0.1.0)'
-        required: true
-        type: string
+    branches:
+      - main
 
 concurrency:
-  group: release-${{ github.ref_name || github.event.inputs.tag || github.run_id }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   resolve-tag:
-    name: Resolve Tag
+    name: Resolve Release Tag
     runs-on: ubuntu-latest
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       clean_version: ${{ steps.resolve.outputs.clean_version }}
       base_version: ${{ steps.resolve.outputs.base_version }}
       is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      should_release: ${{ steps.resolve.outputs.should_release }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - id: resolve
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-
-          if [[ -z "${TAG}" || "${TAG}" != v* ]]; then
-            echo "Release tag must start with 'v'. Got: '${TAG}'"
+          CLEAN_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "${CLEAN_VERSION}" ]]; then
+            echo "Failed to read Cargo.toml version."
             exit 1
           fi
 
-          CLEAN_VERSION="${TAG#v}"
           BASE_VERSION="${CLEAN_VERSION%%-*}"
           if [[ "${CLEAN_VERSION}" == *"-"* ]]; then
             IS_PRERELEASE="true"
@@ -50,21 +44,41 @@ jobs:
             IS_PRERELEASE="false"
           fi
 
+          TAG="v${CLEAN_VERSION}"
+          if git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            TAG_EXISTS="true"
+            SHOULD_RELEASE="false"
+          else
+            TAG_EXISTS="false"
+            SHOULD_RELEASE="true"
+          fi
+
           echo "release_tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "clean_version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "base_version=${BASE_VERSION}" >> "${GITHUB_OUTPUT}"
           echo "is_prerelease=${IS_PRERELEASE}" >> "${GITHUB_OUTPUT}"
+          echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
+          echo "should_release=${SHOULD_RELEASE}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "Detected version: ${CLEAN_VERSION}"
+            echo "Resolved release tag: ${TAG}"
+            if [[ "${TAG_EXISTS}" == "true" ]]; then
+              echo "Tag already exists. Skipping release pipeline."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   validate:
     name: Validate Release
     needs: resolve-tag
+    if: needs.resolve-tag.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     env:
       CARGO_NET_OFFLINE: "false"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,29 +104,6 @@ jobs:
         with:
           tool: cargo-deny
 
-      - name: Verify Tag Matches Cargo.toml Version
-        shell: bash
-        run: |
-          VERSION_CLEAN="${{ needs.resolve-tag.outputs.clean_version }}"
-          VERSION_BASE="${{ needs.resolve-tag.outputs.base_version }}"
-          IS_PRERELEASE="${{ needs.resolve-tag.outputs.is_prerelease }}"
-
-          TOML_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          if [[ -z "${TOML_VERSION}" ]]; then
-            echo "Failed to read Cargo.toml version."
-            exit 1
-          fi
-
-          EXPECT_VERSION="${VERSION_CLEAN}"
-          if [[ "${IS_PRERELEASE}" == "true" ]]; then
-            EXPECT_VERSION="${VERSION_BASE}"
-          fi
-
-          if [[ "${TOML_VERSION}" != "${EXPECT_VERSION}" ]]; then
-            echo "Tag version (${VERSION_CLEAN}) does not match Cargo.toml (${TOML_VERSION})."
-            exit 1
-          fi
-
       - name: Verify Changelog Section (if CHANGELOG.md exists)
         shell: bash
         run: |
@@ -126,18 +117,16 @@ jobs:
             echo "CHANGELOG.md not found. Skipping changelog section validation."
           fi
 
-      - name: Release Tag Info
+      - name: Release Info
         shell: bash
         run: |
           TAG="${{ needs.resolve-tag.outputs.release_tag }}"
           IS_PRERELEASE="${{ needs.resolve-tag.outputs.is_prerelease }}"
-          BASE_VERSION="${{ needs.resolve-tag.outputs.base_version }}"
 
           if [[ "${IS_PRERELEASE}" == "true" ]]; then
             {
               echo "Detected pre-release tag: ${TAG}"
-              echo "Using base version for changelog/Cargo.toml checks: ${BASE_VERSION}"
-              echo "Crates.io publish is skipped for prerelease tags."
+              echo "Crates.io publish is skipped for prerelease versions."
             } >> "${GITHUB_STEP_SUMMARY}"
           else
             {
@@ -167,14 +156,14 @@ jobs:
   publish-crates:
     name: Publish to Crates.io
     needs: [resolve-tag, validate]
-    if: needs.resolve-tag.outputs.is_prerelease == 'false'
+    if: needs.resolve-tag.outputs.should_release == 'true' && needs.resolve-tag.outputs.is_prerelease == 'false'
     runs-on: ubuntu-latest
     env:
       CARGO_NET_OFFLINE: "false"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -202,6 +191,7 @@ jobs:
   build-binaries:
     name: Build Binaries
     needs: [resolve-tag, validate]
+    if: needs.resolve-tag.outputs.should_release == 'true'
     strategy:
       matrix:
         include:
@@ -213,7 +203,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             suffix: windows-x86_64
             archive: zip
-          - os: macos-14
+          - os: macos-13
             target: x86_64-apple-darwin
             suffix: macos-x86_64
             archive: tar.gz
@@ -227,7 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+          ref: ${{ github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -270,6 +260,7 @@ jobs:
     needs: [resolve-tag, build-binaries, publish-crates]
     if: >
       always() &&
+      needs.resolve-tag.outputs.should_release == 'true' &&
       needs.build-binaries.result == 'success' &&
       (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
     runs-on: ubuntu-latest
@@ -278,7 +269,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-tag.outputs.release_tag }}
+          ref: ${{ github.sha }}
 
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
@@ -316,14 +307,14 @@ jobs:
 
           echo "path=${NOTES_FILE}" >> "${GITHUB_OUTPUT}"
 
-      - name: Create or Update GitHub Release
+      - name: Create GitHub Release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ needs.resolve-tag.outputs.release_tag }}
+          commit: ${{ github.sha }}
           name: Release ${{ needs.resolve-tag.outputs.release_tag }}
           bodyFile: ${{ steps.notes.outputs.path }}
           artifacts: release-artifacts/*
-          allowUpdates: true
-          omitBodyDuringUpdate: false
+          allowUpdates: false
           prerelease: ${{ needs.resolve-tag.outputs.is_prerelease == 'true' }}
           makeLatest: ${{ needs.resolve-tag.outputs.is_prerelease == 'false' }}
