@@ -13,6 +13,7 @@ High-performance Solana slotstrike runtime focused on Raydium pool creation even
 - Transaction submission modes:
   - `jito`
   - `direct`
+  - combined routing via `sof_tx.mode = "hybrid"` or `sof_tx.mode = "custom"`
 - SOF ingress/runtime modes:
   - websocket provider-stream
   - Yellowstone gRPC provider-stream
@@ -124,6 +125,8 @@ Legacy note:
 
 - `enabled`: enables `sof-tx` submission from the strategy path.
 - `mode`: `rpc`, `jito`, `direct`, `hybrid`, or `custom`.
+  `hybrid` resolves to `["direct", "rpc"]`.
+  `custom` allows explicit route combinations such as `["jito", "rpc"]`, `["direct", "jito"]`, or `["direct", "jito", "rpc"]`.
 - `strategy`: `ordered_fallback` or `all_at_once`.
 - `routes`: explicit route order for `mode = "custom"`.
 - `reliability`: `low_latency`, `balanced`, or `high_reliability`.
