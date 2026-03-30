@@ -13,10 +13,13 @@ High-performance Solana slotstrike runtime focused on Raydium pool creation even
 - Transaction submission modes:
   - `jito`
   - `direct`
-- Ingress path failover (log/event intake):
-  - FPGA DMA (primary)
-  - Kernel bypass feed path (secondary)
-  - Standard TCP websocket feed path (fallback)
+- SOF ingress/runtime modes:
+  - websocket provider-stream
+  - Yellowstone gRPC provider-stream
+  - private shred ingest with trusted/untrusted posture
+- Runtime stance:
+  - SOF-only ingress and structured transaction parsing
+  - legacy raw-log ingress removed on March 29, 2026
 
 ## Configuration Model
 
@@ -34,16 +37,29 @@ keypair_path = "keypair.json"
 rpc_url = "https://api.mainnet-beta.solana.com"
 wss_url = "wss://api.mainnet-beta.solana.com"
 priority_fees = 1000000
+dry_run = false
 tx_submission_mode = "jito"
 jito_url = "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions?bundleOnly=true"
-kernel_tcp_bypass = true
-kernel_tcp_bypass_engine = "af_xdp_or_dpdk_external"
-kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
-fpga_enabled = false
-fpga_vendor = "generic"
-fpga_ingress_mode = "auto"
-fpga_direct_device_path = "/dev/slotstrike-fpga0"
-fpga_dma_socket_path = "/tmp/slotstrike-fpga-dma.sock"
+
+[sof]
+enabled = true
+source = "websocket"
+websocket_url = "wss://api.mainnet-beta.solana.com"
+private_shred_socket_path = "/tmp/slotstrike-sof-private-shreds.sock"
+private_shred_source_addr = "127.0.0.1:19001"
+trusted_private_shreds = false
+commitment = "processed"
+inline_transaction_dispatch = true
+ingest_queue_mode = "lockfree"
+ingest_queue_capacity = 16384
+
+[sof_tx]
+enabled = true
+mode = "custom"
+strategy = "ordered_fallback"
+routes = ["jito", "rpc"]
+jito_transport = "json_rpc"
+bundle_only = true
 
 [telemetry]
 enabled = true
@@ -72,24 +88,60 @@ slippage_pct = "1"
 
 - `keypair_path`: path to Solana keypair JSON.
 - `rpc_url`: HTTP RPC URL.
-- `wss_url`: websocket URL.
+- `wss_url`: compatibility alias for SOF websocket mode. Prefer `sof.websocket_url`.
 - `priority_fees`: microlamports.
+- `dry_run`: build and sign swaps without submitting them.
 - `tx_submission_mode`: `jito` or `direct`.
 - `jito_url`: required when `tx_submission_mode = "jito"`.
-- `kernel_tcp_bypass`: enable kernel bypass path.
-- `kernel_tcp_bypass_engine`: `af_xdp`, `dpdk`, `openonload`, `af_xdp_or_dpdk_external`.
-- `kernel_bypass_socket_path`: unix socket for external AF_XDP/DPDK bypass feed bridge.
-- `fpga_enabled`: force FPGA ingress if available.
-- `fpga_verbose`: verbose FPGA diagnostics.
-- `fpga_vendor`: `mock_dma`, `generic`, `exanic`, `xilinx`, `amd`, `solarflare`, or `napatech`.
-- `fpga_ingress_mode`: `auto`, `mock_dma`, `direct_device`, or `external_socket`.
-- `fpga_direct_device_path`: direct vendor-device ingest path (character device/FIFO/file) used by `direct_device`.
-- `fpga_dma_socket_path`: unix socket for `external_socket` bridge mode.
-- direct frame wire format: one frame per line. Preferred JSON: `{"payload_base64":"...","hardware_timestamp_ns":123}`.
-  Alternate wire format: base64 payload-only line.
 - `replay_benchmark`: run synthetic replay instead of live strategy.
 - `replay_event_count`: replay event count.
 - `replay_burst_size`: replay burst size.
+
+Legacy note:
+
+- Legacy ingress runtime keys such as old `kernel_tcp_bypass` and `fpga_*` settings are no longer accepted. The runtime config is SOF-only and those fields now fail TOML parsing instead of being silently ignored.
+
+`[sof]`:
+
+- `enabled`: enables SOF-backed runtime startup.
+- `source`: `websocket`, `grpc`, or `private_shred`.
+- `websocket_url`: provider websocket endpoint for SOF websocket mode.
+- `grpc_url`: Yellowstone gRPC endpoint for SOF gRPC mode.
+- `grpc_x_token`: optional Yellowstone auth token.
+- `private_shred_socket_path`: unix socket path Slotstrike binds for private shred propagation.
+- `private_shred_source_addr`: synthetic source address attached to packets arriving from the private shred socket.
+- `gossip_entrypoints`: optional SOF gossip bootstrap entrypoints used for direct-route TPU topology.
+- `gossip_validators`: optional validator allowlist for gossip control-plane tracking.
+- `gossip_runtime_mode`: `full`, `bootstrap_only`, or `control_plane_only`. Slotstrike defaults to `control_plane_only` so gossip maintains topology/leader state without gossip shred ingest.
+- `trusted_private_shreds`: when `true`, SOF uses trusted raw-shred provider mode.
+- `commitment`: `processed`, `confirmed`, or `finalized`.
+- `inline_transaction_dispatch`: enables SOF inline transaction dispatch where possible.
+- `startup_step_logs`, `worker_threads`, `dataset_workers`, `packet_workers`: runtime tuning knobs.
+- `ingest_queue_mode`: `bounded`, `unbounded`, or `lockfree`.
+- `ingest_queue_capacity`: queue capacity for bounded/lockfree ingest.
+
+`[sof_tx]`:
+
+- `enabled`: enables `sof-tx` submission from the strategy path.
+- `mode`: `rpc`, `jito`, `direct`, `hybrid`, or `custom`.
+- `strategy`: `ordered_fallback` or `all_at_once`.
+- `routes`: explicit route order for `mode = "custom"`.
+- `reliability`: `low_latency`, `balanced`, or `high_reliability`.
+- `jito_transport`: `json_rpc` or `grpc`.
+- `jito_endpoint`: optional Jito block-engine endpoint override.
+- `bundle_only`: enables Jito revert protection.
+- `routing_next_leaders`, `routing_backup_validators`, `routing_max_parallel_sends`: direct-route tuning.
+- `guard_require_stable_control_plane`, `guard_reject_on_replay_recovery_pending`, `guard_max_state_version_drift`, `guard_max_opportunity_age_ms`, `guard_suppression_ttl_ms`: toxic-flow guard policy.
+- Direct-route TPU topology is sourced from SOF gossip bootstrap via `sof.gossip_entrypoints`.
+- Direct-route leader schedule is refreshed infrequently from `runtime.rpc_url` and injected into `sof-tx`.
+- `sof.gossip_runtime_mode = "control_plane_only"` keeps that control plane active without enabling gossip shred ingest.
+
+Guard rail:
+
+- `sof_tx` direct routing can be used with `websocket`, `grpc`, or `private_shred`.
+- Direct routing requires `runtime.rpc_url` plus at least one `sof.gossip_entrypoints` value.
+- Gossip supplies TPU topology; Slotstrike uses SOF recent-blockhash state to advance the direct leader window and RPC leader-schedule snapshots to keep routing accurate.
+- `private_shred` remains the lowest-latency option for direct routing, but the direct control plane can now stay gossip topology-only instead of ingesting gossip shreds.
 
 `[telemetry]`:
 
@@ -107,17 +159,6 @@ slippage_pct = "1"
 - `slippage_pct`: percent string.
 
 Note: monetary/percentage rule values are strings and parsed via fixed-point/integer-safe logic to avoid float drift.
-
-## FPGA Direct Mode
-
-For production users integrating vendor devices directly:
-
-1. Set `fpga_enabled = true`.
-2. Set `fpga_ingress_mode = "direct_device"`.
-3. Set `fpga_direct_device_path` to your driver/device export path.
-
-Startup now fails fast if the direct device path is missing or not readable.
-Full operator contract and wire format: `docs/operations/fpga_direct_ingress.md`.
 
 Multiple mint addresses:
 
@@ -162,12 +203,6 @@ enabled = false
 
 When disabled, no telemetry samples or telemetry report lines are emitted.
 
-External kernel-bypass bridge frame format (newline-delimited JSON on unix socket):
-
-```json
-{"signature":"...","logs":["..."],"has_error":false,"hardware_timestamp_ns":1700000000,"received_timestamp_ns":1700000100}
-```
-
 ## Run
 
 Direct:
@@ -186,14 +221,9 @@ Useful runtime flags:
 
 - `--config <path>`
 - `--replay-benchmark`
-- `--fpga`
-- `--fpga-verbose`
-
-If you set `kernel_tcp_bypass_engine = "openonload"`, run under Onload (or equivalent preload setup) to activate acceleration.
-If you set `fpga_enabled = true`, startup now fails fast unless FPGA prerequisites are available for the selected mode.
 
 Note: ingress feed transport and tx submission transport are separate concerns.  
-Ingress can use FPGA/kernel-bypass/websocket, while tx submission uses `direct` RPC or `jito` based on `tx_submission_mode`.
+Slotstrike now always uses SOF for ingress/runtime selection and can route submits through `sof-tx`. The legacy `tx_submission_mode` remains only as a compatibility fallback when `sof_tx.enabled = false`.
 
 ## Linux systemd
 
@@ -254,8 +284,8 @@ If automatic airdrop is rate-limited, the script prompts manual funding via `htt
 ## Quality Gates
 
 - Tests (nextest): `cargo make test`
-- Clippy (deny warnings): `cargo make clippy`
-- Cargo deny: `cargo make deny`
+- Live read-only replay probe: `SLOTSTRIKE_LIVE_SIGNATURE=<sig> SLOTSTRIKE_LIVE_KIND=cpmm|openbook SLOTSTRIKE_LIVE_MINT=<mint> cargo test --test live_raydium_dry_run -- --ignored --nocapture`
+- Clippy: `cargo make clippy`
 - Fuzz all targets: `cargo make fuzz-all`
 
 Fuzz prerequisites (one-time):
@@ -271,18 +301,53 @@ Synthetic replay benchmark:
 cargo make replay-benchmark
 ```
 
+Symbolized release profile:
+
+```bash
+CARGO_PROFILE_RELEASE_STRIP=none perf record -o perf-slotstrike.data -- target/release/slotstrike --config slotstrike.example.toml --replay-benchmark
+perf report --stdio --no-children -i perf-slotstrike.data
+```
+
 Tune with:
 
 - `runtime.replay_event_count`
 - `runtime.replay_burst_size`
+
+Current measured replay costs on this host with `events=50000` and `repeats=20`:
+
+- `sof_structured_creation_scan`: `25,580,254 ev/s`, `p50 20ns`, `p99 30ns`
+- `sof_structured_swap_scan`: `25,368,739 ev/s`, `p50 20ns`, `p99 40ns`
+
+Out-of-the-box SOF improvement versus the old cold legacy baseline on this same host:
+
+- Creation path:
+  `25,580,254 ev/s` with SOF vs `1,959,388 ev/s` on old FPGA DMA and `3,861,559 ev/s` on old kernel-bypass.
+- Exact creation speedup:
+  `13.06x` vs old FPGA DMA, `6.62x` vs old kernel-bypass.
+- Swap-reject path:
+  `25,368,739 ev/s` with SOF vs `2,548,307 ev/s` on old FPGA DMA and `3,808,408 ev/s` on old kernel-bypass.
+- Exact swap-reject speedup:
+  `9.96x` vs old FPGA DMA, `6.66x` vs old kernel-bypass.
+
+Interpretation:
+
+- Slotstrike no longer ships the legacy raw-log ingress path. The active runtime is always structured and SOF-native.
+- Historical cold legacy baseline on this same host, captured earlier on March 29, 2026 before the legacy finder-reuse pass:
+  `fpga_dma_creation_scan = 1,959,388 ev/s`, `kernel_bypass_creation_scan = 3,861,559 ev/s`,
+  `fpga_dma_swap_scan = 2,548,307 ev/s`, `kernel_bypass_swap_scan = 3,808,408 ev/s`.
+- `private_shred` should be preferred when you trust the feed and want the lowest end-to-end latency plus SOF-TX direct routing support.
+- `grpc` is the next-best operational choice when you want the same structured Slotstrike processing path without running private shred infrastructure.
+- `websocket` is still valid through SOF, but its transport/decode layer is typically the least attractive of the SOF options for ultra-low-latency use.
+- The SOF candidate plugin is instruction-aware for Raydium pool creation and only forwards structured CPMM/OpenBook create transactions into the sniper path.
+- The strategy handlers no longer refetch `JsonParsed` transactions or scan RPC log strings. They parse instruction data and accounts directly from the SOF transaction, resolving ALT lookups only when needed.
+- ALT lookup tables are now cached in-process and only refetched when a transaction references indexes beyond the cached table length, which removes repeated `getMultipleAccounts` churn from the live v0 path.
+- The latest symbolized profile is benchmark-noise dominated. Slotstrike replay symbols fell below the `0.5%` report threshold; the top samples were VDSO clock reads plus allocator/page-fault overhead from the synthetic harness.
 
 ## Documentation
 
 - Runtime architecture: `docs/architecture/runtime.md`
 - On-call playbook: `docs/runbooks/oncall.md`
 - Contribution guide: `CONTRIBUTING.md`
-- FPGA NIC deployment/PTP/rollback: `docs/operations/fpga_nic_deployment.md`
-- FPGA direct ingress contract: `docs/operations/fpga_direct_ingress.md`
 
 ## Disclaimer
 

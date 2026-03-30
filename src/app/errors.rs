@@ -6,8 +6,6 @@ use thiserror::Error;
 use crate::{
     app::{logging::LoggingError, systemd::SystemdError},
     domain::settings::SettingsError,
-    ports::fpga_feed::FpgaFeedError,
-    ports::log_stream::LogStreamError,
 };
 
 #[derive(Debug, Error)]
@@ -24,8 +22,6 @@ pub enum AppError {
     Rulebook(#[from] RulebookLoadError),
     #[error(transparent)]
     WalletBalance(#[from] WalletBalanceError),
-    #[error(transparent)]
-    IngressReadiness(#[from] IngressReadinessError),
     #[error(transparent)]
     IngressStartup(#[from] IngressStartupError),
 }
@@ -77,39 +73,7 @@ pub enum WalletBalanceError {
 }
 
 #[derive(Debug, Error)]
-pub enum IngressReadinessError {
-    #[error("fpga ingress prerequisites are not satisfied")]
-    Fpga {
-        #[source]
-        source: FpgaFeedError,
-    },
-    #[error("kernel bypass ingress prerequisites are not satisfied")]
-    KernelBypass {
-        #[source]
-        source: LogStreamError,
-    },
-    #[error("standard tcp ingress prerequisites are not satisfied")]
-    StandardTcp {
-        #[source]
-        source: LogStreamError,
-    },
-}
-
-#[derive(Debug, Error)]
 pub enum IngressStartupError {
-    #[error("failed to start fpga ingress path")]
-    Fpga {
-        #[source]
-        source: FpgaFeedError,
-    },
-    #[error("failed to start kernel bypass ingress path")]
-    KernelBypass {
-        #[source]
-        source: LogStreamError,
-    },
-    #[error("failed to start standard tcp ingress path")]
-    StandardTcp {
-        #[source]
-        source: LogStreamError,
-    },
+    #[error("failed to start SOF runtime: {detail}")]
+    Sof { detail: String },
 }

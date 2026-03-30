@@ -10,25 +10,18 @@ use tokio::{
 };
 
 use crate::{
-    adapters::{
-        fpga_feed::FpgaFeedAdapter, network_path::NetworkPathProfile,
-        solana_logs::SolanaPubsubLogStream, toml_rules::TomlRuleRepository,
-    },
+    adapters::toml_rules::TomlRuleRepository,
     app::{
         context::ExecutionContext,
-        errors::{
-            AppError, IngressStartupError, KeypairLoadError, RulebookLoadError, WalletBalanceError,
-        },
+        errors::{AppError, KeypairLoadError, RulebookLoadError, WalletBalanceError},
         logging::init_logging,
-        readiness::validate_ingress_readiness,
+        sof_runtime::SofRuntimeHarness,
         systemd::maybe_handle_service_command,
     },
     domain::{
-        events::RawLogEvent,
-        settings::{NetworkStackMode, RuntimeSettings},
-        value_objects::sol_amount::Lamports,
+        settings::RuntimeSettings,
+        value_objects::{SofIngressSource, sol_amount::Lamports},
     },
-    ports::{fpga_feed::FpgaFeedPort, log_stream::LogStreamPort, network_path::NetworkPathPort},
     slices::{
         config_sync::service::{ConfigSyncService, load_rulebook},
         sniper::{
@@ -38,6 +31,8 @@ use crate::{
         },
     },
 };
+
+const EVENT_QUEUE_CAPACITY: usize = 4_096;
 
 pub async fn run() {
     if let Err(error) = run_inner().await {
@@ -69,29 +64,6 @@ async fn run_inner() -> Result<(), AppError> {
         return Ok(());
     }
 
-    let network_path = NetworkPathProfile::from_settings(&settings);
-    let fpga_feed = FpgaFeedAdapter::new(
-        settings.fpga_vendor.as_str().to_owned(),
-        settings.fpga_verbose,
-    )
-    .with_ingress_mode(settings.fpga_ingress_mode)
-    .with_direct_device_path(settings.fpga_direct_device_path.as_str().to_owned())
-    .with_dma_socket_path(settings.fpga_dma_socket_path.as_str().to_owned());
-    let kernel_bypass_stream = SolanaPubsubLogStream::kernel_bypass(
-        settings.wss_url.as_str().to_owned(),
-        settings.kernel_tcp_bypass_engine,
-        settings.kernel_bypass_socket_path.as_str().to_owned(),
-    );
-    let standard_tcp_stream =
-        SolanaPubsubLogStream::standard_tcp(settings.wss_url.as_str().to_owned());
-
-    validate_ingress_readiness(
-        &network_path,
-        &fpga_feed,
-        &kernel_bypass_stream,
-        &standard_tcp_stream,
-    )?;
-
     let keypair = Arc::new(load_keypair(&settings.keypair_path).await?);
     let rpc = Arc::new(RpcClient::new(settings.rpc_url.clone()));
 
@@ -119,21 +91,11 @@ async fn run_inner() -> Result<(), AppError> {
     let deployer_rules = initial_rulebook.deployer_log_lines();
     log_runtime_settings(
         &settings,
-        &network_path,
         &keypair.pubkey(),
         &balance,
         &mint_rules,
         &deployer_rules,
     );
-    maybe_log_fpga_feed(&settings, &fpga_feed);
-
-    let context = Arc::new(ExecutionContext {
-        priority_fees: settings.priority_fees.as_u64(),
-        rpc,
-        keypair,
-        tx_submission_mode: settings.tx_submission_mode,
-        jito_url: Arc::new(settings.jito_url.clone()),
-    });
 
     let telemetry = Arc::new(if settings.telemetry_enabled {
         LatencyTelemetry::new(settings.latency_sample_capacity, settings.latency_slo_ns)
@@ -144,24 +106,39 @@ async fn run_inner() -> Result<(), AppError> {
         settings.latency_report_period_secs,
     ));
 
-    let (events_tx, events_rx) = mpsc::unbounded_channel();
-    start_ingress_stream(
-        &network_path,
-        &fpga_feed,
-        &kernel_bypass_stream,
-        &standard_tcp_stream,
-        events_tx,
-    )?;
+    let (events_tx, events_rx) = mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let sof_harness = SofRuntimeHarness::build(&settings, events_tx.clone()).await?;
+
+    let context = Arc::new(ExecutionContext {
+        priority_fees: settings.priority_fees.as_u64(),
+        rpc,
+        keypair,
+        dry_run: settings.dry_run,
+        tx_submission_mode: settings.tx_submission_mode,
+        jito_url: Arc::new(settings.jito_url.clone()),
+        sof_tx_client: sof_harness.sof_tx_client.clone(),
+        sof_tx_plan: sof_harness.sof_tx_plan.clone(),
+        sof_tx_uses_jito: sof_harness.sof_tx_uses_jito,
+        sof_tx_blockhash_adapter: sof_harness.control_plane_adapter.clone(),
+        require_local_blockhash: settings.sof.source == SofIngressSource::PrivateShred,
+    });
 
     let engine = SniperEngine::new(context, events_rx, rulebook_rx, telemetry);
-    engine.run().await;
+    drop(events_tx);
+    let engine_task = tokio::spawn(async move {
+        engine.run().await;
+    });
+    let runtime_result = sof_harness.run().await;
+    if let Err(error) = engine_task.await {
+        log::warn!("sniper engine task join failed: {}", error);
+    }
+    runtime_result?;
 
     Ok(())
 }
 
 fn log_runtime_settings(
     settings: &RuntimeSettings,
-    network_path: &NetworkPathProfile,
     wallet: &solana_sdk::pubkey::Pubkey,
     balance: &str,
     mint_rules: &[String],
@@ -178,86 +155,50 @@ fn log_runtime_settings(
 \t\t{}\
 \n\tDEPLOYERS:\
 \t\t{}\
+\n\tDRY_RUN: {}\
 \n\tTX_SUBMISSION_MODE: {}\
 \n\tJITO_URL: {}\
 \n\tRPC_URL: {}\
-\n\tWSS_URL: {}\
-\n\tNETWORK_STACK_MODE: {}\
-\n\tNETWORK_PATH: {}\
-\n\tKERNEL_TCP_BYPASS: {}\
-\n\tFPGA_ENABLED: {}\
-\n\tFPGA_INGRESS_MODE: {}\
-\n\tFPGA_DIRECT_DEVICE_PATH: {}\
-\n\tFPGA_DMA_SOCKET_PATH: {}\
+\n\tSOF_SOURCE: {}\
+\n\tSOF_TRUSTED_PRIVATE_SHREDS: {}\
+\n\tSOF_GOSSIP_RUNTIME_MODE: {}\
+\n\tSOF_TX_ENABLED: {}\
+\n\tSOF_TX_MODE: {}\
+\n\tSOF_TX_STRATEGY: {}\
+\n\tSOF_TX_ROUTES: {}\
 \n\tTELEMETRY_ENABLED: {}",
         wallet,
         balance,
         settings.priority_fees.as_u64(),
         mints_string,
         deployers_string,
+        settings.dry_run,
         settings.tx_submission_mode.as_str(),
         settings.jito_url,
         settings.rpc_url,
-        settings.wss_url.as_str(),
-        network_path.mode().as_str(),
-        network_path.describe(),
-        network_path.kernel_bypass_enabled(),
-        network_path.fpga_enabled(),
-        settings.fpga_ingress_mode.as_str(),
-        settings.fpga_direct_device_path.as_str(),
-        settings.fpga_dma_socket_path.as_str(),
+        settings.sof.source.as_str(),
+        settings.sof.trusted_private_shreds,
+        settings.sof.gossip_runtime_mode.as_str(),
+        settings.sof_tx.enabled,
+        settings.sof_tx.mode.as_str(),
+        settings.sof_tx.strategy.as_str(),
+        format_sof_tx_routes(settings),
         settings.telemetry_enabled,
     );
 }
 
-fn maybe_log_fpga_feed(settings: &RuntimeSettings, fpga_feed: &FpgaFeedAdapter) {
-    if settings.fpga_enabled {
-        log::info!(
-            "FPGA_FEED: {} (vendor={}, verbose={})",
-            fpga_feed.describe(),
-            fpga_feed.vendor(),
-            fpga_feed.verbose(),
-        );
-    }
-}
-
-fn start_ingress_stream(
-    network_path: &NetworkPathProfile,
-    fpga_feed: &FpgaFeedAdapter,
-    kernel_bypass_stream: &SolanaPubsubLogStream,
-    standard_tcp_stream: &SolanaPubsubLogStream,
-    events_tx: mpsc::UnboundedSender<RawLogEvent>,
-) -> Result<(), IngressStartupError> {
-    match network_path.mode() {
-        NetworkStackMode::Fpga => {
-            fpga_feed
-                .spawn_stream(events_tx)
-                .map_err(|source| IngressStartupError::Fpga { source })?;
-            log::info!(
-                "Ingress path selected: FPGA DMA ring -> strategy events (zero-copy frame parse)"
-            );
-        }
-        NetworkStackMode::KernelBypass => {
-            kernel_bypass_stream
-                .spawn_stream(events_tx)
-                .map_err(|source| IngressStartupError::KernelBypass { source })?;
-            log::info!(
-                "Ingress path selected: {} -> strategy events",
-                kernel_bypass_stream.path_name()
-            );
-        }
-        NetworkStackMode::StandardTcp => {
-            standard_tcp_stream
-                .spawn_stream(events_tx)
-                .map_err(|source| IngressStartupError::StandardTcp { source })?;
-            log::info!(
-                "Ingress path selected: {} -> strategy events",
-                standard_tcp_stream.path_name()
-            );
-        }
+fn format_sof_tx_routes(settings: &RuntimeSettings) -> String {
+    if settings.sof_tx.routes.is_empty() {
+        return "none".to_owned();
     }
 
-    Ok(())
+    settings
+        .sof_tx
+        .routes
+        .iter()
+        .map(|route| route.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn load_keypair(path: &str) -> Result<Keypair, KeypairLoadError> {

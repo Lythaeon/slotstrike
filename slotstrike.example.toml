@@ -1,27 +1,78 @@
 [runtime]
 keypair_path = "keypair.json"
 rpc_url = "https://api.mainnet-beta.solana.com"
+# compatibility alias used when [sof].source = "websocket" and sof.websocket_url is unset
 wss_url = "wss://api.mainnet-beta.solana.com"
 priority_fees = 1000000
+# when true, Slotstrike builds/signs swap transactions but never submits them
+dry_run = false
+# compatibility fallback when sof_tx.enabled = false
 tx_submission_mode = "jito"
 jito_url = "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions?bundleOnly=true"
-kernel_tcp_bypass = true
-# supported: "af_xdp", "dpdk", "openonload", "af_xdp_or_dpdk_external"
-kernel_tcp_bypass_engine = "af_xdp_or_dpdk_external"
-# used when kernel_tcp_bypass_engine is AF_XDP/DPDK external bridge mode
-kernel_bypass_socket_path = "/tmp/slotstrike-kernel-bypass.sock"
-fpga_enabled = false
-fpga_verbose = false
-fpga_vendor = "generic"
-# supported: "auto", "mock_dma", "direct_device", "external_socket"
-fpga_ingress_mode = "auto"
-# used when fpga_enabled=true and fpga_ingress_mode resolves to direct_device
-fpga_direct_device_path = "/dev/slotstrike-fpga0"
-# used when fpga_enabled=true and fpga_ingress_mode=external_socket
-fpga_dma_socket_path = "/tmp/slotstrike-fpga-dma.sock"
 replay_benchmark = false
 replay_event_count = 50000
 replay_burst_size = 512
+
+[sof]
+enabled = true
+# supported: "websocket", "grpc", "private_shred"
+source = "websocket"
+# optional override for provider websocket mode; falls back to runtime.wss_url
+websocket_url = "wss://api.mainnet-beta.solana.com"
+# used when source = "grpc"
+grpc_url = "http://127.0.0.1:10000"
+# grpc_x_token = "provider-auth-token"
+# used when source = "private_shred"
+private_shred_socket_path = "/tmp/slotstrike-sof-private-shreds.sock"
+# synthetic source address attached to packets received from the private propagation socket
+private_shred_source_addr = "127.0.0.1:19001"
+# used when sof_tx direct routing is enabled; Slotstrike uses gossip for TPU topology
+# and runtime.rpc_url for infrequent leader-schedule refreshes
+gossip_entrypoints = ["127.0.0.1:8001"]
+# optional validator allowlist for gossip bootstrap control-plane tracking
+# gossip_validators = ["ValidatorIdentity1111111111111111111111111111111"]
+# supported: "full", "bootstrap_only", "control_plane_only"
+# default recommended mode for Slotstrike: keep gossip for topology/leader state without gossip shred ingest
+gossip_runtime_mode = "control_plane_only"
+# when true, SOF treats the private shred feed as a trusted provider and relaxes verification defaults
+trusted_private_shreds = false
+# supported: "processed", "confirmed", "finalized"
+commitment = "processed"
+inline_transaction_dispatch = true
+startup_step_logs = false
+worker_threads = 4
+dataset_workers = 2
+packet_workers = 2
+# supported: "bounded", "unbounded", "lockfree"
+ingest_queue_mode = "lockfree"
+ingest_queue_capacity = 16384
+
+[sof_tx]
+enabled = true
+# supported: "rpc", "jito", "direct", "hybrid", "custom"
+mode = "custom"
+# supported: "ordered_fallback", "all_at_once"
+strategy = "ordered_fallback"
+# supported routes: "rpc", "jito", "direct"
+# direct routing can be paired with websocket, grpc, or private_shred ingress
+# it requires runtime.rpc_url plus sof.gossip_entrypoints
+# gossip supplies TPU topology; Slotstrike injects leader schedule from RPC while
+# gossip_runtime_mode = "control_plane_only" keeps gossip data-plane-free
+routes = ["jito", "rpc"]
+# supported: "low_latency", "balanced", "high_reliability"
+reliability = "balanced"
+# supported: "json_rpc", "grpc"
+jito_transport = "json_rpc"
+jito_endpoint = "https://amsterdam.mainnet.block-engine.jito.wtf"
+bundle_only = true
+routing_next_leaders = 2
+routing_backup_validators = 1
+routing_max_parallel_sends = 4
+guard_require_stable_control_plane = true
+guard_reject_on_replay_recovery_pending = true
+guard_max_state_version_drift = 4
+guard_max_opportunity_age_ms = 750
+guard_suppression_ttl_ms = 750
 
 [telemetry]
 enabled = true

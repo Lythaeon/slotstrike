@@ -1,34 +1,26 @@
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
-use solana_client::{
-    nonblocking::rpc_client::RpcClient,
-    rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig},
-};
-use solana_commitment_config::CommitmentConfig;
-use solana_compute_budget_interface::ComputeBudgetInstruction;
+use sof_solana_compat::TxBuilder;
+use sof_tx::SignedTx;
+use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
     signature::Signature,
     signer::Signer,
-    transaction::Transaction,
+    transaction::VersionedTransaction,
 };
 use solana_system_interface::instruction::transfer;
-use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
-    UiParsedInstruction, UiTransactionEncoding,
-};
+use solana_transaction_status::UiTransactionEncoding;
 use spl_associated_token_account::{
     get_associated_token_address, get_associated_token_address_with_program_id,
-    instruction::{create_associated_token_account, create_associated_token_account_idempotent},
+    instruction::create_associated_token_account_idempotent,
 };
 use spl_token::instruction::{close_account, sync_native};
 
 use crate::{
-    MAX_RETRIES,
     adapters::raydium::{
-        RAYDIUM_STANDARD_AMM_PROGRAM_ID, STANDARD_AMM_SWAP_BASE_INPUT, WSOL_ADDRESS, pool_open_time,
+        ParsedCpmmCreation, STANDARD_AMM_SWAP_BASE_INPUT, parse_cpmm_creation_transaction,
     },
     app::context::ExecutionContext,
     domain::{
@@ -37,99 +29,43 @@ use crate::{
         services::RuleMatcher,
         value_objects::{TxSubmissionMode, sol_amount::Lamports},
     },
-    slices::sniper::{cache, log_parser::extract_u64_after_prefix},
+    slices::sniper::cache,
 };
 
-#[derive(Clone, Copy)]
-struct CpmmAccounts<'account_data> {
-    deployer_address: &'account_data str,
-    amm_config: &'account_data str,
-    authority: &'account_data str,
-    pool_state: &'account_data str,
-    mint_a: &'account_data str,
-    mint_b: &'account_data str,
-    vault_a: &'account_data str,
-    vault_b: &'account_data str,
-    observation_state: &'account_data str,
-    token_program_a: &'account_data str,
-    token_program_b: &'account_data str,
-}
-
-impl<'account_data> CpmmAccounts<'account_data> {
-    fn parse(accounts: &'account_data [String]) -> Option<Self> {
-        Some(Self {
-            deployer_address: accounts.first()?.as_str(),
-            amm_config: accounts.get(1)?.as_str(),
-            authority: accounts.get(2)?.as_str(),
-            pool_state: accounts.get(3)?.as_str(),
-            mint_a: accounts.get(4)?.as_str(),
-            mint_b: accounts.get(5)?.as_str(),
-            vault_a: accounts.get(10)?.as_str(),
-            vault_b: accounts.get(11)?.as_str(),
-            observation_state: accounts.get(13)?.as_str(),
-            token_program_a: accounts.get(15)?.as_str(),
-            token_program_b: accounts.get(16)?.as_str(),
-        })
-    }
-
-    fn token_address(&self) -> Option<&'account_data str> {
-        match (self.mint_a == WSOL_ADDRESS, self.mint_b == WSOL_ADDRESS) {
-            (true, false) => Some(self.mint_b),
-            (false, true) => Some(self.mint_a),
-            _ => None,
-        }
-    }
-
-    fn token_program(&self) -> Option<&'account_data str> {
-        match (self.mint_a == WSOL_ADDRESS, self.mint_b == WSOL_ADDRESS) {
-            (true, false) => Some(self.token_program_b),
-            (false, true) => Some(self.token_program_a),
-            _ => None,
-        }
-    }
-
-    fn token_is_vault_zero(&self) -> bool {
-        self.mint_a != WSOL_ADDRESS
-    }
-
-    fn input_vault(&self) -> &'account_data str {
-        if self.token_is_vault_zero() {
-            self.vault_b
-        } else {
-            self.vault_a
-        }
-    }
-
-    fn output_vault(&self) -> &'account_data str {
-        if self.token_is_vault_zero() {
-            self.vault_a
-        } else {
-            self.vault_b
-        }
-    }
-}
-
-pub async fn handle_cpmm_event(
+pub async fn handle_cpmm_candidate_structured(
     context: Arc<ExecutionContext>,
     rulebook: Arc<RuleBook>,
-    logs: Vec<String>,
-    signature: Signature,
+    transaction: Arc<solana_sdk::transaction::VersionedTransaction>,
     ingress_metadata: IngressMetadata,
 ) {
-    let vault_0_amount = match extract_u64_after_prefix(&logs, "vault_0_amount:") {
+    let program_id = match cache::raydium_standard_amm_program_pubkey() {
+        Some(value) => value,
+        None => return,
+    };
+    let creation = match parse_cpmm_creation_transaction(
+        context.rpc.as_ref(),
+        transaction.as_ref(),
+        program_id,
+    )
+    .await
+    {
         Some(value) => value,
         None => return,
     };
 
-    let vault_1_amount = match extract_u64_after_prefix(&logs, "vault_1_amount:") {
-        Some(value) => value,
-        None => return,
-    };
+    handle_cpmm_transaction(context, rulebook, ingress_metadata, creation).await;
+}
 
+async fn handle_cpmm_transaction(
+    context: Arc<ExecutionContext>,
+    rulebook: Arc<RuleBook>,
+    ingress_metadata: IngressMetadata,
+    creation: ParsedCpmmCreation,
+) {
     log::debug!(
         "CPMM > vault_0_amount: {}, vault_1_amount: {}",
-        vault_0_amount,
-        vault_1_amount
+        creation.init_amount_0,
+        creation.init_amount_1
     );
 
     let ingress_latency_ns =
@@ -142,44 +78,29 @@ pub async fn handle_cpmm_event(
         ingress_latency_ns
     );
 
-    let creation_tx =
-        match fetch_transaction_with_retries(context.rpc.as_ref(), &signature, "CPMM").await {
-            Some(value) => value,
-            None => return,
-        };
-
-    log::debug!("CPMM > Pool creation transaction: {:?}", creation_tx);
-
-    let accounts = match extract_program_accounts(&creation_tx, RAYDIUM_STANDARD_AMM_PROGRAM_ID) {
+    let token_address = match creation.token_mint() {
         Some(value) => value,
         None => return,
     };
-
-    let parsed_accounts = match CpmmAccounts::parse(&accounts) {
+    let token_program = match creation.token_program() {
         Some(value) => value,
         None => return,
     };
+    let deployer_address = creation.deployer_address;
+    let token_address_text = token_address.to_string();
+    let deployer_address_text = deployer_address.to_string();
 
-    log::debug!("CPMM > Pool creation accounts: {:?}", accounts);
-
-    let token_address = match parsed_accounts.token_address() {
+    let matched_rule = match RuleMatcher::match_rule(
+        rulebook.as_ref(),
+        token_address_text.as_str(),
+        deployer_address_text.as_str(),
+    ) {
         Some(value) => value,
-        None => return,
+        None => {
+            log::debug!("CPMM > {} > Ignoring token", token_address);
+            return;
+        }
     };
-    let token_program = match parsed_accounts.token_program() {
-        Some(value) => value,
-        None => return,
-    };
-    let deployer_address = parsed_accounts.deployer_address;
-
-    let matched_rule =
-        match RuleMatcher::match_rule(rulebook.as_ref(), token_address, deployer_address) {
-            Some(value) => value,
-            None => {
-                log::debug!("CPMM > {} > Ignoring token", token_address);
-                return;
-            }
-        };
 
     log::debug!(
         "CPMM > {} > Matched by {:?} rule key {}",
@@ -198,76 +119,20 @@ pub async fn handle_cpmm_event(
 
     log::info!("CPMM > Found token: {}", token_address);
     log::info!("CPMM > {} > Creating transaction", token_address);
-
     let program_id = match cache::raydium_standard_amm_program_pubkey() {
         Some(value) => value,
         None => return,
     };
 
-    let authority = match Pubkey::from_str(parsed_accounts.authority) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let amm_config = match Pubkey::from_str(parsed_accounts.amm_config) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let pool_state = match Pubkey::from_str(parsed_accounts.pool_state) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let input_vault = match Pubkey::from_str(parsed_accounts.input_vault()) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let output_vault = match Pubkey::from_str(parsed_accounts.output_vault()) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let observation_state = match Pubkey::from_str(parsed_accounts.observation_state) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
     log::debug!(
         "CPMM > {} > Authority: {}, AMM config: {}, Pool state: {}, Input vault: {}, Output vault: {}, Observation state: {}",
         token_address,
-        authority,
-        amm_config,
-        pool_state,
-        input_vault,
-        output_vault,
-        observation_state,
-    );
-
-    log::info!("CPMM > {} > Requesting pool data", token_address);
-
-    let pool = match fetch_pool_with_retries(context.rpc.as_ref(), &pool_state, token_address).await
-    {
-        Some(value) => value,
-        None => return,
-    };
-
-    log::debug!("CPMM > {} > Pool response: {:?}", token_address, pool);
-
-    let pool_value = match pool.value {
-        Some(value) => value,
-        None => return,
-    };
-
-    let pool_open_timestamp = match pool_open_time(&pool_value.data) {
-        Some(value) => value,
-        None => return,
-    };
-    log::debug!(
-        "CPMM > {} > Pool open time: {}",
-        token_address,
-        pool_open_timestamp
+        creation.authority,
+        creation.amm_config,
+        creation.pool_state,
+        creation.input_vault(),
+        creation.output_vault(),
+        creation.observation_state,
     );
 
     let lamports = matched_rule.hot.snipe_height().as_lamports().as_u64();
@@ -276,22 +141,12 @@ pub async fn handle_cpmm_event(
         None => return,
     };
 
-    let token_pubkey = match Pubkey::from_str(token_address) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
-    let token_program_pubkey = match Pubkey::from_str(token_program) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
     let user_in_token_account =
         get_associated_token_address(&context.keypair.pubkey(), &wsol_pubkey);
     let user_out_token_account = get_associated_token_address_with_program_id(
         &context.keypair.pubkey(),
-        &token_pubkey,
-        &token_program_pubkey,
+        &token_address,
+        &token_program,
     );
 
     let token_program_id = match cache::token_program_pubkey() {
@@ -299,11 +154,7 @@ pub async fn handle_cpmm_event(
         None => return,
     };
 
-    let mut instructions = Vec::with_capacity(9);
-    instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(120_000));
-    instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
-        context.priority_fees,
-    ));
+    let mut instructions = Vec::with_capacity(7);
 
     instructions.push(create_associated_token_account_idempotent(
         &context.keypair.pubkey(),
@@ -327,19 +178,19 @@ pub async fn handle_cpmm_event(
     };
     instructions.push(sync_instruction);
 
-    instructions.push(create_associated_token_account(
+    instructions.push(create_associated_token_account_idempotent(
         &context.keypair.pubkey(),
         &context.keypair.pubkey(),
-        &token_pubkey,
-        &token_program_pubkey,
+        &token_address,
+        &token_program,
     ));
 
     let min_amount_out = calculate_min_amount_out(
         lamports,
         matched_rule.hot.slippage().as_bps(),
-        vault_0_amount,
-        vault_1_amount,
-        parsed_accounts.token_is_vault_zero(),
+        creation.init_amount_0,
+        creation.init_amount_1,
+        creation.token_is_vault_zero(),
     );
 
     log::debug!(
@@ -358,18 +209,18 @@ pub async fn handle_cpmm_event(
         &swap_data,
         vec![
             AccountMeta::new_readonly(context.keypair.pubkey(), true),
-            AccountMeta::new_readonly(authority, false),
-            AccountMeta::new_readonly(amm_config, false),
-            AccountMeta::new(pool_state, false),
+            AccountMeta::new_readonly(creation.authority, false),
+            AccountMeta::new_readonly(creation.amm_config, false),
+            AccountMeta::new(creation.pool_state, false),
             AccountMeta::new(user_in_token_account, false),
             AccountMeta::new(user_out_token_account, false),
-            AccountMeta::new(input_vault, false),
-            AccountMeta::new(output_vault, false),
+            AccountMeta::new(creation.input_vault(), false),
+            AccountMeta::new(creation.output_vault(), false),
             AccountMeta::new_readonly(token_program_id, false),
-            AccountMeta::new_readonly(token_program_pubkey, false),
+            AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(wsol_pubkey, false),
-            AccountMeta::new_readonly(token_pubkey, false),
-            AccountMeta::new(observation_state, false),
+            AccountMeta::new_readonly(token_address, false),
+            AccountMeta::new(creation.observation_state, false),
         ],
     ));
 
@@ -389,7 +240,7 @@ pub async fn handle_cpmm_event(
     instructions.push(close_instruction);
 
     let jito_tip_lamports = matched_rule.hot.jito_tip().as_lamports().as_u64();
-    if context.tx_submission_mode == TxSubmissionMode::Jito {
+    if context.sof_tx_uses_jito || context.tx_submission_mode == TxSubmissionMode::Jito {
         let jito_tip_account = match cache::jito_tip_pubkey() {
             Some(value) => value,
             None => return,
@@ -402,29 +253,34 @@ pub async fn handle_cpmm_event(
         ));
     }
 
-    maybe_wait_for_pool_open(pool_open_timestamp, token_address, "CPMM").await;
+    maybe_wait_for_pool_open(creation.open_time, token_address_text.as_str(), "CPMM").await;
 
-    let blockhash = match context.rpc.get_latest_blockhash().await {
+    let blockhash = match context.latest_swap_blockhash().await {
         Ok(value) => value,
         Err(error) => {
-            log::error!(
-                "CPMM > {} > Failed to fetch blockhash: {}",
-                token_address,
-                error
-            );
+            log::error!("CPMM > {} > {}", token_address, error);
             return;
         }
     };
 
-    let swap_tx = {
-        let signer_refs: [&dyn Signer; 1] = [context.keypair.as_ref()];
-        Transaction::new_signed_with_payer(
-            &instructions,
-            Some(&context.keypair.pubkey()),
-            &signer_refs,
-            blockhash,
-        )
+    let swap_tx = match build_swap_transaction(context.as_ref(), instructions, blockhash) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("CPMM > {} > {}", token_address, error);
+            return;
+        }
     };
+
+    let swap_signature = swap_tx.signatures.first().copied().unwrap_or_default();
+
+    if context.dry_run {
+        log::info!(
+            "CPMM > {} > Dry run built swap transaction: {} (submission skipped)",
+            token_address,
+            swap_signature
+        );
+        return;
+    }
 
     log::info!("CPMM > {} > Starting swap", token_address);
 
@@ -446,32 +302,24 @@ pub async fn handle_cpmm_event(
         sent_signature
     );
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-
-    let status = match context.rpc.get_signature_status(&sent_signature).await {
-        Ok(value) => value,
-        Err(error) => {
+    match wait_for_signature_status(
+        context.rpc.as_ref(),
+        &sent_signature,
+        token_address_text.as_str(),
+        "CPMM",
+    )
+    .await
+    {
+        Some(Ok(())) => (),
+        Some(Err(error)) => {
             log::error!(
-                "CPMM > {} > Signature status failed: {}",
+                "CPMM > {} > Swap transaction failed: {}",
                 token_address,
                 error
             );
             return;
         }
-    };
-
-    let Some(status) = status else {
-        log::error!("CPMM > {} > No signature status returned", token_address);
-        return;
-    };
-
-    if let Err(error) = status {
-        log::error!(
-            "CPMM > {} > Swap transaction failed: {}",
-            token_address,
-            error
-        );
-        return;
+        None => return,
     }
 
     let balance = match context.rpc.get_balance(&context.keypair.pubkey()).await {
@@ -500,10 +348,64 @@ pub async fn handle_cpmm_event(
     );
 }
 
+async fn wait_for_signature_status(
+    rpc: &RpcClient,
+    signature: &Signature,
+    token_address: &str,
+    label: &str,
+) -> Option<Result<(), String>> {
+    const MAX_CONFIRMATION_POLLS: usize = 120;
+    let mut delay = tokio::time::Duration::from_millis(250);
+
+    for _ in 0..MAX_CONFIRMATION_POLLS {
+        let status = match rpc.get_signature_status(signature).await {
+            Ok(value) => value,
+            Err(error) => {
+                log::error!(
+                    "{} > {} > Signature status failed: {}",
+                    label,
+                    token_address,
+                    error
+                );
+                return None;
+            }
+        };
+
+        if let Some(status) = status {
+            return Some(status.map_err(|error| error.to_string()));
+        }
+
+        tokio::time::sleep(delay).await;
+        if delay < tokio::time::Duration::from_secs(2) {
+            delay = delay
+                .saturating_mul(2)
+                .min(tokio::time::Duration::from_secs(2));
+        }
+    }
+
+    log::error!(
+        "{} > {} > No signature status returned before timeout",
+        label,
+        token_address
+    );
+    None
+}
+
 async fn submit_swap_transaction(
     context: &ExecutionContext,
-    swap_tx: &Transaction,
-) -> Result<Signature, solana_client::client_error::ClientError> {
+    swap_tx: &VersionedTransaction,
+) -> Result<Signature, String> {
+    if let (Some(client), Some(plan)) = (&context.sof_tx_client, &context.sof_tx_plan) {
+        let tx_bytes = bincode::serialize(swap_tx)
+            .map_err(|error| format!("failed to serialize transaction for SOF-TX: {error}"))?;
+        let mut client = client.lock().await;
+        client
+            .submit_signed_via(SignedTx::VersionedTransactionBytes(tx_bytes), plan.clone())
+            .await
+            .map_err(|error| format!("SOF-TX submit failed: {error}"))?;
+        return Ok(swap_tx.signatures.first().copied().unwrap_or_default());
+    }
+
     let send_config = RpcSendTransactionConfig {
         skip_preflight: true,
         encoding: Some(UiTransactionEncoding::Base58),
@@ -515,134 +417,29 @@ async fn submit_swap_transaction(
         return context
             .rpc
             .send_transaction_with_config(swap_tx, send_config)
-            .await;
+            .await
+            .map_err(|error| error.to_string());
     }
 
     let jito_rpc = RpcClient::new(context.jito_url.as_ref().clone());
     jito_rpc
         .send_transaction_with_config(swap_tx, send_config)
         .await
+        .map_err(|error| error.to_string())
 }
 
-async fn fetch_transaction_with_retries(
-    rpc: &RpcClient,
-    signature: &Signature,
-    label: &str,
-) -> Option<EncodedConfirmedTransactionWithStatusMeta> {
-    let mut retries = 0_usize;
-
-    loop {
-        match rpc
-            .get_transaction_with_config(
-                signature,
-                RpcTransactionConfig {
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    max_supported_transaction_version: Some(0),
-                    encoding: Some(UiTransactionEncoding::JsonParsed),
-                },
-            )
-            .await
-        {
-            Ok(tx) => return Some(tx),
-            Err(error) => {
-                if !error.to_string().contains("invalid type: null") {
-                    log::error!("{} > Error getting transaction: {}", label, error);
-                } else {
-                    log::debug!("{} > Error getting transaction: {}", label, error);
-                }
-
-                retries = retries.saturating_add(1);
-                if retries >= MAX_RETRIES {
-                    log::error!(
-                        "{} > Max retries reached in transaction. Exiting loop.",
-                        label
-                    );
-                    return None;
-                }
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(1_000)).await;
-            }
-        }
-    }
-}
-
-async fn fetch_pool_with_retries(
-    rpc: &RpcClient,
-    pool_state: &Pubkey,
-    token_address: &str,
-) -> Option<solana_client::rpc_response::Response<Option<solana_sdk::account::Account>>> {
-    let mut retries = 0_usize;
-
-    loop {
-        match rpc
-            .get_account_with_commitment(pool_state, CommitmentConfig::confirmed())
-            .await
-        {
-            Ok(pool) => {
-                if pool.value.is_none() {
-                    log::debug!(
-                        "CPMM > {} > Pool not available yet: {}",
-                        token_address,
-                        pool_state
-                    );
-                    retries = retries.saturating_add(1);
-                    if retries >= MAX_RETRIES {
-                        log::error!("CPMM > Max retries reached in pool. Exiting loop.");
-                        return None;
-                    }
-
-                    tokio::time::sleep(tokio::time::Duration::from_millis(1_000)).await;
-                    continue;
-                }
-
-                return Some(pool);
-            }
-            Err(error) => {
-                if !error.to_string().contains("invalid type: null") {
-                    log::error!("CPMM > Error getting pool data: {}", error);
-                } else {
-                    log::debug!("CPMM > Error getting pool data: {}", error);
-                }
-
-                retries = retries.saturating_add(1);
-                if retries >= MAX_RETRIES {
-                    log::error!("CPMM > Max retries reached in pool. Exiting loop.");
-                    return None;
-                }
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(1_000)).await;
-            }
-        }
-    }
-}
-
-fn extract_program_accounts(
-    tx: &EncodedConfirmedTransactionWithStatusMeta,
-    program_id: &str,
-) -> Option<Vec<String>> {
-    let EncodedTransaction::Json(json_tx) = &tx.transaction.transaction else {
-        return None;
-    };
-
-    let UiMessage::Parsed(message) = &json_tx.message else {
-        return None;
-    };
-
-    for instruction in &message.instructions {
-        let UiInstruction::Parsed(parsed_instruction) = instruction else {
-            continue;
-        };
-
-        let UiParsedInstruction::PartiallyDecoded(decoded_instruction) = parsed_instruction else {
-            continue;
-        };
-
-        if decoded_instruction.program_id == program_id {
-            return Some(decoded_instruction.accounts.clone());
-        }
-    }
-
-    None
+fn build_swap_transaction(
+    context: &ExecutionContext,
+    instructions: Vec<Instruction>,
+    blockhash: solana_sdk::hash::Hash,
+) -> Result<VersionedTransaction, String> {
+    let signer_refs: [&dyn Signer; 1] = [context.keypair.as_ref()];
+    TxBuilder::new(context.keypair.pubkey())
+        .with_compute_unit_limit(120_000)
+        .with_priority_fee_micro_lamports(context.priority_fees)
+        .add_instructions(instructions)
+        .build_and_sign(blockhash.to_bytes(), &signer_refs)
+        .map_err(|error| format!("failed to build/sign swap transaction: {error}"))
 }
 
 #[inline(always)]
