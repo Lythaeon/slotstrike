@@ -269,10 +269,6 @@ jobs:
             target: x86_64-apple-darwin
             suffix: macos-x86_64
             archive: tar.gz
-          - os: macos-14
-            target: aarch64-apple-darwin
-            suffix: macos-arm64
-            archive: tar.gz
     runs-on: ${{ matrix.os }}
     env:
       CARGO_NET_OFFLINE: "false"
