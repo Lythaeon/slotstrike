@@ -6,80 +6,6 @@ use std::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum KernelBypassEngine {
-    AfXdp,
-    Dpdk,
-    OpenOnload,
-    AfXdpOrDpdkExternal,
-}
-
-impl KernelBypassEngine {
-    pub fn parse(value: &str) -> Option<Self> {
-        let normalized = value.trim().to_ascii_lowercase();
-        match normalized.as_str() {
-            "af_xdp" => Some(Self::AfXdp),
-            "dpdk" => Some(Self::Dpdk),
-            "openonload" | "onload" => Some(Self::OpenOnload),
-            "af_xdp_or_dpdk_external" => Some(Self::AfXdpOrDpdkExternal),
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AfXdp => "af_xdp",
-            Self::Dpdk => "dpdk",
-            Self::OpenOnload => "openonload",
-            Self::AfXdpOrDpdkExternal => "af_xdp_or_dpdk_external",
-        }
-    }
-}
-
-impl Display for KernelBypassEngine {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FpgaIngressMode {
-    Auto,
-    MockDma,
-    DirectDevice,
-    ExternalSocket,
-}
-
-impl FpgaIngressMode {
-    pub fn parse(value: &str) -> Option<Self> {
-        let normalized = value.trim().to_ascii_lowercase();
-        match normalized.as_str() {
-            "auto" => Some(Self::Auto),
-            "mock_dma" => Some(Self::MockDma),
-            "direct_device" => Some(Self::DirectDevice),
-            "external_socket" => Some(Self::ExternalSocket),
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::MockDma => "mock_dma",
-            Self::DirectDevice => "direct_device",
-            Self::ExternalSocket => "external_socket",
-        }
-    }
-}
-
-impl Display for FpgaIngressMode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TxSubmissionMode {
     Jito,
     Direct,
@@ -105,6 +31,280 @@ impl TxSubmissionMode {
 }
 
 impl Display for TxSubmissionMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofIngressSource {
+    Websocket,
+    Grpc,
+    PrivateShred,
+}
+
+impl SofIngressSource {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "websocket" | "ws" => Some(Self::Websocket),
+            "grpc" | "yellowstone_grpc" => Some(Self::Grpc),
+            "private_shred" | "private-propagation" | "shred" => Some(Self::PrivateShred),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Websocket => "websocket",
+            Self::Grpc => "grpc",
+            Self::PrivateShred => "private_shred",
+        }
+    }
+}
+
+impl Display for SofIngressSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofCommitmentLevel {
+    Processed,
+    Confirmed,
+    Finalized,
+}
+
+impl SofCommitmentLevel {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "processed" => Some(Self::Processed),
+            "confirmed" => Some(Self::Confirmed),
+            "finalized" => Some(Self::Finalized),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Processed => "processed",
+            Self::Confirmed => "confirmed",
+            Self::Finalized => "finalized",
+        }
+    }
+}
+
+impl Display for SofCommitmentLevel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofGossipRuntimeMode {
+    Full,
+    BootstrapOnly,
+    ControlPlaneOnly,
+}
+
+impl SofGossipRuntimeMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "full" => Some(Self::Full),
+            "bootstrap_only" | "bootstrap-only" => Some(Self::BootstrapOnly),
+            "control_plane_only" | "control-plane-only" | "topology_only" | "topology-only" => {
+                Some(Self::ControlPlaneOnly)
+            }
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::BootstrapOnly => "bootstrap_only",
+            Self::ControlPlaneOnly => "control_plane_only",
+        }
+    }
+}
+
+impl Display for SofGossipRuntimeMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofTxMode {
+    Rpc,
+    Jito,
+    Direct,
+    Hybrid,
+    Custom,
+}
+
+impl SofTxMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "rpc" | "rpc_only" => Some(Self::Rpc),
+            "jito" | "jito_only" => Some(Self::Jito),
+            "direct" | "direct_only" => Some(Self::Direct),
+            "hybrid" => Some(Self::Hybrid),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rpc => "rpc",
+            Self::Jito => "jito",
+            Self::Direct => "direct",
+            Self::Hybrid => "hybrid",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+impl Display for SofTxMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofTxStrategy {
+    OrderedFallback,
+    AllAtOnce,
+}
+
+impl SofTxStrategy {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "ordered_fallback" | "ordered" => Some(Self::OrderedFallback),
+            "all_at_once" | "burst" => Some(Self::AllAtOnce),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OrderedFallback => "ordered_fallback",
+            Self::AllAtOnce => "all_at_once",
+        }
+    }
+}
+
+impl Display for SofTxStrategy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofTxRoute {
+    Rpc,
+    Jito,
+    Direct,
+}
+
+impl SofTxRoute {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "rpc" => Some(Self::Rpc),
+            "jito" => Some(Self::Jito),
+            "direct" => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rpc => "rpc",
+            Self::Jito => "jito",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+impl Display for SofTxRoute {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofTxReliability {
+    LowLatency,
+    Balanced,
+    HighReliability,
+}
+
+impl SofTxReliability {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "low_latency" | "low" => Some(Self::LowLatency),
+            "balanced" => Some(Self::Balanced),
+            "high_reliability" | "high" => Some(Self::HighReliability),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LowLatency => "low_latency",
+            Self::Balanced => "balanced",
+            Self::HighReliability => "high_reliability",
+        }
+    }
+}
+
+impl Display for SofTxReliability {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SofTxJitoTransport {
+    JsonRpc,
+    Grpc,
+}
+
+impl SofTxJitoTransport {
+    pub fn parse(value: &str) -> Option<Self> {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "json_rpc" | "json-rpc" | "rpc" => Some(Self::JsonRpc),
+            "grpc" => Some(Self::Grpc),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::JsonRpc => "json_rpc",
+            Self::Grpc => "grpc",
+        }
+    }
+}
+
+impl Display for SofTxJitoTransport {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -215,60 +415,9 @@ impl TryFrom<&str> for NonEmptyText {
 #[cfg(test)]
 mod tests {
     use super::{
-        FpgaIngressMode, KernelBypassEngine, NonEmptyText, PriorityFeesMicrolamports,
-        ReplayBurstSize, ReplayEventCount, TxSubmissionMode,
+        NonEmptyText, PriorityFeesMicrolamports, ReplayBurstSize, ReplayEventCount,
+        SofGossipRuntimeMode, TxSubmissionMode,
     };
-
-    #[test]
-    fn parses_supported_kernel_bypass_engines() {
-        assert_eq!(
-            KernelBypassEngine::parse("af_xdp"),
-            Some(KernelBypassEngine::AfXdp)
-        );
-        assert_eq!(
-            KernelBypassEngine::parse("DPDK"),
-            Some(KernelBypassEngine::Dpdk)
-        );
-        assert_eq!(
-            KernelBypassEngine::parse("af_xdp_or_dpdk_external"),
-            Some(KernelBypassEngine::AfXdpOrDpdkExternal)
-        );
-        assert_eq!(
-            KernelBypassEngine::parse("openonload"),
-            Some(KernelBypassEngine::OpenOnload)
-        );
-        assert_eq!(
-            KernelBypassEngine::parse("ONLOAD"),
-            Some(KernelBypassEngine::OpenOnload)
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_kernel_bypass_engine() {
-        assert_eq!(KernelBypassEngine::parse("invalid"), None);
-    }
-
-    #[test]
-    fn parses_fpga_ingress_mode() {
-        assert_eq!(FpgaIngressMode::parse("auto"), Some(FpgaIngressMode::Auto));
-        assert_eq!(
-            FpgaIngressMode::parse("mock_dma"),
-            Some(FpgaIngressMode::MockDma)
-        );
-        assert_eq!(
-            FpgaIngressMode::parse("direct_device"),
-            Some(FpgaIngressMode::DirectDevice)
-        );
-        assert_eq!(
-            FpgaIngressMode::parse("EXTERNAL_SOCKET"),
-            Some(FpgaIngressMode::ExternalSocket)
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_fpga_ingress_mode() {
-        assert_eq!(FpgaIngressMode::parse("invalid"), None);
-    }
 
     #[test]
     fn parses_tx_submission_mode() {
@@ -285,6 +434,22 @@ mod tests {
     #[test]
     fn rejects_invalid_tx_submission_mode() {
         assert_eq!(TxSubmissionMode::parse("invalid"), None);
+    }
+
+    #[test]
+    fn parses_gossip_runtime_modes() {
+        assert_eq!(
+            SofGossipRuntimeMode::parse("full"),
+            Some(SofGossipRuntimeMode::Full)
+        );
+        assert_eq!(
+            SofGossipRuntimeMode::parse("bootstrap-only"),
+            Some(SofGossipRuntimeMode::BootstrapOnly)
+        );
+        assert_eq!(
+            SofGossipRuntimeMode::parse("topology_only"),
+            Some(SofGossipRuntimeMode::ControlPlaneOnly)
+        );
     }
 
     #[test]

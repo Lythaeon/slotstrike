@@ -1,35 +1,26 @@
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{Local, TimeZone};
-use solana_client::{
-    nonblocking::rpc_client::RpcClient,
-    rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig},
-};
-use solana_commitment_config::CommitmentConfig;
-use solana_compute_budget_interface::ComputeBudgetInstruction;
+use sof_solana_compat::TxBuilder;
+use sof_tx::SignedTx;
+use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
     signature::Signature,
     signer::Signer,
-    transaction::Transaction,
+    transaction::VersionedTransaction,
 };
 use solana_system_interface::instruction::transfer;
-use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
-    UiParsedInstruction, UiTransactionEncoding,
-};
+use solana_transaction_status::UiTransactionEncoding;
 use spl_associated_token_account::{
-    get_associated_token_address,
-    instruction::{create_associated_token_account, create_associated_token_account_idempotent},
+    get_associated_token_address, instruction::create_associated_token_account_idempotent,
 };
 use spl_token::instruction::{close_account, sync_native};
 
 use crate::{
-    MAX_RETRIES,
     adapters::raydium::{
-        RAYDIUM_V4_PROGRAM_ID, SwapInstructionBaseIn, WSOL_ADDRESS, get_associated_authority,
-        get_market_accounts,
+        ParsedOpenbookCreation, SwapInstructionBaseIn, get_associated_authority,
+        get_market_accounts, parse_openbook_creation_transaction,
     },
     app::context::ExecutionContext,
     domain::{
@@ -38,84 +29,44 @@ use crate::{
         services::RuleMatcher,
         value_objects::{TxSubmissionMode, sol_amount::Lamports},
     },
-    slices::sniper::{
-        cache,
-        log_parser::{extract_i64_after_prefix, extract_u64_after_prefix},
-    },
+    slices::sniper::cache,
 };
 
-#[derive(Clone, Copy)]
-struct OpenbookAccounts<'account_data> {
-    id: &'account_data str,
-    authority: &'account_data str,
-    open_orders: &'account_data str,
-    mint_a: &'account_data str,
-    mint_b: &'account_data str,
-    base_vault: &'account_data str,
-    quote_vault: &'account_data str,
-    target_orders: &'account_data str,
-    market_program_id: &'account_data str,
-    market_id: &'account_data str,
-    deployer_address: &'account_data str,
-}
-
-impl<'account_data> OpenbookAccounts<'account_data> {
-    fn parse(accounts: &'account_data [String]) -> Option<Self> {
-        Some(Self {
-            id: accounts.get(4)?.as_str(),
-            authority: accounts.get(5)?.as_str(),
-            open_orders: accounts.get(6)?.as_str(),
-            mint_a: accounts.get(8)?.as_str(),
-            mint_b: accounts.get(9)?.as_str(),
-            base_vault: accounts.get(10)?.as_str(),
-            quote_vault: accounts.get(11)?.as_str(),
-            target_orders: accounts.get(12)?.as_str(),
-            market_program_id: accounts.get(15)?.as_str(),
-            market_id: accounts.get(16)?.as_str(),
-            deployer_address: accounts.get(17)?.as_str(),
-        })
-    }
-
-    fn token_address(&self) -> Option<&'account_data str> {
-        match (self.mint_a == WSOL_ADDRESS, self.mint_b == WSOL_ADDRESS) {
-            (true, false) => Some(self.mint_b),
-            (false, true) => Some(self.mint_a),
-            _ => None,
-        }
-    }
-
-    fn token_is_coin_mint(&self) -> bool {
-        self.mint_a != WSOL_ADDRESS
-    }
-}
-
-pub async fn handle_openbook_event(
+pub async fn handle_openbook_candidate_structured(
     context: Arc<ExecutionContext>,
     rulebook: Arc<RuleBook>,
-    logs: Vec<String>,
-    signature: Signature,
+    transaction: Arc<solana_sdk::transaction::VersionedTransaction>,
     ingress_metadata: IngressMetadata,
 ) {
-    let init_pc_amount = match extract_u64_after_prefix(&logs, "init_pc_amount: ") {
+    let program_id = match cache::raydium_v4_program_pubkey() {
+        Some(value) => value,
+        None => return,
+    };
+    let creation = match parse_openbook_creation_transaction(
+        context.rpc.as_ref(),
+        transaction.as_ref(),
+        program_id,
+    )
+    .await
+    {
         Some(value) => value,
         None => return,
     };
 
-    let init_coin_amount = match extract_u64_after_prefix(&logs, "init_coin_amount: ") {
-        Some(value) => value,
-        None => return,
-    };
+    handle_openbook_transaction(context, rulebook, ingress_metadata, creation).await;
+}
 
-    let open_timestamp = match extract_i64_after_prefix(&logs, "open_time: ") {
-        Some(value) => value,
-        None => return,
-    };
-
+async fn handle_openbook_transaction(
+    context: Arc<ExecutionContext>,
+    rulebook: Arc<RuleBook>,
+    ingress_metadata: IngressMetadata,
+    creation: ParsedOpenbookCreation,
+) {
     log::debug!(
         "OpenBook > init_pc_amount: {}, init_coin_amount: {}, open_time: {}",
-        init_pc_amount,
-        init_coin_amount,
-        open_timestamp
+        creation.init_pc_amount,
+        creation.init_coin_amount,
+        creation.open_time
     );
 
     let ingress_latency_ns =
@@ -128,40 +79,24 @@ pub async fn handle_openbook_event(
         ingress_latency_ns
     );
 
-    let creation_tx =
-        match fetch_transaction_with_retries(context.rpc.as_ref(), &signature, "OpenBook").await {
-            Some(value) => value,
-            None => return,
-        };
-
-    log::debug!("OpenBook > Pool creation transaction: {:?}", creation_tx);
-
-    let accounts = match extract_program_accounts(&creation_tx, RAYDIUM_V4_PROGRAM_ID) {
+    let token_address = match creation.token_mint() {
         Some(value) => value,
         None => return,
     };
-    let parsed_accounts = match OpenbookAccounts::parse(&accounts) {
+    let token_address_text = token_address.to_string();
+    let deployer_address_text = creation.deployer_address.to_string();
+
+    let matched_rule = match RuleMatcher::match_rule(
+        rulebook.as_ref(),
+        token_address_text.as_str(),
+        deployer_address_text.as_str(),
+    ) {
         Some(value) => value,
-        None => return,
+        None => {
+            log::debug!("OpenBook > {} > Ignoring token", token_address);
+            return;
+        }
     };
-
-    log::debug!("OpenBook > Pool creation accounts: {:?}", accounts);
-
-    let token_address = match parsed_accounts.token_address() {
-        Some(value) => value,
-        None => return,
-    };
-
-    let deployer_address = parsed_accounts.deployer_address;
-
-    let matched_rule =
-        match RuleMatcher::match_rule(rulebook.as_ref(), token_address, deployer_address) {
-            Some(value) => value,
-            None => {
-                log::debug!("OpenBook > {} > Ignoring token", token_address);
-                return;
-            }
-        };
 
     log::debug!(
         "OpenBook > {} > Matched by {:?} rule key {}",
@@ -180,53 +115,20 @@ pub async fn handle_openbook_event(
 
     log::info!("OpenBook > {} > Found token", token_address);
 
-    let id = match Pubkey::from_str(parsed_accounts.id) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let authority = match Pubkey::from_str(parsed_accounts.authority) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let open_orders = match Pubkey::from_str(parsed_accounts.open_orders) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let base_vault = match Pubkey::from_str(parsed_accounts.base_vault) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let quote_vault = match Pubkey::from_str(parsed_accounts.quote_vault) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let target_orders = match Pubkey::from_str(parsed_accounts.target_orders) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let market_program_id = match Pubkey::from_str(parsed_accounts.market_program_id) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-    let market_id = match Pubkey::from_str(parsed_accounts.market_id) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
     log::debug!(
         "OpenBook > {} > ID: {}, Authority: {}, Open orders: {}, Base vault: {}, Quote vault: {}, Target orders: {}, Market program ID: {}, Market ID: {}",
         token_address,
-        id,
-        authority,
-        open_orders,
-        base_vault,
-        quote_vault,
-        target_orders,
-        market_program_id,
-        market_id,
+        creation.id,
+        creation.authority,
+        creation.open_orders,
+        creation.base_vault,
+        creation.quote_vault,
+        creation.target_orders,
+        creation.market_program_id,
+        creation.market_id,
     );
 
-    let market = match get_market_accounts(&context.rpc, &market_id).await {
+    let market = match get_market_accounts(&context.rpc, &creation.market_id).await {
         Some(value) => value,
         None => return,
     };
@@ -238,11 +140,6 @@ pub async fn handle_openbook_event(
         None => return,
     };
 
-    let token_pubkey = match Pubkey::from_str(token_address) {
-        Ok(value) => value,
-        Err(_) => return,
-    };
-
     let token_program_id = match cache::token_program_pubkey() {
         Some(value) => value,
         None => return,
@@ -251,14 +148,9 @@ pub async fn handle_openbook_event(
     let user_in_token_account =
         get_associated_token_address(&context.keypair.pubkey(), &wsol_pubkey);
     let user_out_token_account =
-        get_associated_token_address(&context.keypair.pubkey(), &token_pubkey);
+        get_associated_token_address(&context.keypair.pubkey(), &token_address);
 
-    let mut instructions = Vec::with_capacity(9);
-
-    instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(120_000));
-    instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
-        context.priority_fees,
-    ));
+    let mut instructions = Vec::with_capacity(7);
 
     instructions.push(create_associated_token_account_idempotent(
         &context.keypair.pubkey(),
@@ -286,19 +178,19 @@ pub async fn handle_openbook_event(
     };
     instructions.push(sync_instruction);
 
-    instructions.push(create_associated_token_account(
+    instructions.push(create_associated_token_account_idempotent(
         &context.keypair.pubkey(),
         &context.keypair.pubkey(),
-        &token_pubkey,
+        &token_address,
         &token_program_id,
     ));
 
     let min_amount_out = calculate_min_amount_out(
         lamports,
         matched_rule.hot.slippage().as_bps(),
-        init_pc_amount,
-        init_coin_amount,
-        parsed_accounts.token_is_coin_mint(),
+        creation.init_pc_amount,
+        creation.init_coin_amount,
+        creation.token_is_coin_mint(),
     );
 
     log::debug!(
@@ -325,14 +217,14 @@ pub async fn handle_openbook_event(
         },
         vec![
             AccountMeta::new_readonly(token_program_id, false),
-            AccountMeta::new(id, false),
-            AccountMeta::new_readonly(authority, false),
-            AccountMeta::new(open_orders, false),
-            AccountMeta::new(target_orders, false),
-            AccountMeta::new(base_vault, false),
-            AccountMeta::new(quote_vault, false),
-            AccountMeta::new_readonly(market_program_id, false),
-            AccountMeta::new(market_id, false),
+            AccountMeta::new(creation.id, false),
+            AccountMeta::new_readonly(creation.authority, false),
+            AccountMeta::new(creation.open_orders, false),
+            AccountMeta::new(creation.target_orders, false),
+            AccountMeta::new(creation.base_vault, false),
+            AccountMeta::new(creation.quote_vault, false),
+            AccountMeta::new_readonly(creation.market_program_id, false),
+            AccountMeta::new(creation.market_id, false),
             AccountMeta::new(market.state.bids, false),
             AccountMeta::new(market.state.asks, false),
             AccountMeta::new(market.state.event_queue, false),
@@ -366,7 +258,7 @@ pub async fn handle_openbook_event(
     instructions.push(close_instruction);
 
     let jito_tip_lamports = matched_rule.hot.jito_tip().as_lamports().as_u64();
-    if context.tx_submission_mode == TxSubmissionMode::Jito {
+    if context.sof_tx_uses_jito || context.tx_submission_mode == TxSubmissionMode::Jito {
         let jito_tip_account = match cache::jito_tip_pubkey() {
             Some(value) => value,
             None => return,
@@ -379,29 +271,34 @@ pub async fn handle_openbook_event(
         ));
     }
 
-    maybe_wait_for_pool_open(open_timestamp, token_address, "OpenBook").await;
+    maybe_wait_for_pool_open(creation.open_time, token_address_text.as_str(), "OpenBook").await;
 
-    let blockhash = match context.rpc.get_latest_blockhash().await {
+    let blockhash = match context.latest_swap_blockhash().await {
         Ok(value) => value,
         Err(error) => {
-            log::error!(
-                "OpenBook > {} > Failed to fetch blockhash: {}",
-                token_address,
-                error
-            );
+            log::error!("OpenBook > {} > {}", token_address, error);
             return;
         }
     };
 
-    let swap_tx = {
-        let signer_refs: [&dyn Signer; 1] = [context.keypair.as_ref()];
-        Transaction::new_signed_with_payer(
-            &instructions,
-            Some(&context.keypair.pubkey()),
-            &signer_refs,
-            blockhash,
-        )
+    let swap_tx = match build_swap_transaction(context.as_ref(), instructions, blockhash) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("OpenBook > {} > {}", token_address, error);
+            return;
+        }
     };
+
+    let swap_signature = swap_tx.signatures.first().copied().unwrap_or_default();
+
+    if context.dry_run {
+        log::info!(
+            "OpenBook > {} > Dry run built swap transaction: {} (submission skipped)",
+            token_address,
+            swap_signature
+        );
+        return;
+    }
 
     let sent_signature = match submit_swap_transaction(context.as_ref(), &swap_tx).await {
         Ok(value) => value,
@@ -421,35 +318,24 @@ pub async fn handle_openbook_event(
         sent_signature
     );
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-
-    let status = match context.rpc.get_signature_status(&sent_signature).await {
-        Ok(value) => value,
-        Err(error) => {
+    match wait_for_signature_status(
+        context.rpc.as_ref(),
+        &sent_signature,
+        token_address_text.as_str(),
+        "OpenBook",
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
             log::error!(
-                "OpenBook > {} > Signature status failed: {}",
+                "OpenBook > {} > Swap transaction failed: {}",
                 token_address,
                 error
             );
             return;
         }
-    };
-
-    let Some(status) = status else {
-        log::error!(
-            "OpenBook > {} > No signature status returned",
-            token_address
-        );
-        return;
-    };
-
-    if let Err(error) = status {
-        log::error!(
-            "OpenBook > {} > Swap transaction failed: {}",
-            token_address,
-            error
-        );
-        return;
+        None => return,
     }
 
     let balance = match context.rpc.get_balance(&context.keypair.pubkey()).await {
@@ -478,10 +364,64 @@ pub async fn handle_openbook_event(
     );
 }
 
+async fn wait_for_signature_status(
+    rpc: &RpcClient,
+    signature: &Signature,
+    token_address: &str,
+    label: &str,
+) -> Option<Result<(), String>> {
+    const MAX_CONFIRMATION_POLLS: usize = 120;
+    let mut delay = tokio::time::Duration::from_millis(250);
+
+    for _ in 0..MAX_CONFIRMATION_POLLS {
+        let status = match rpc.get_signature_status(signature).await {
+            Ok(value) => value,
+            Err(error) => {
+                log::error!(
+                    "{} > {} > Signature status failed: {}",
+                    label,
+                    token_address,
+                    error
+                );
+                return None;
+            }
+        };
+
+        if let Some(status) = status {
+            return Some(status.map_err(|error| error.to_string()));
+        }
+
+        tokio::time::sleep(delay).await;
+        if delay < tokio::time::Duration::from_secs(2) {
+            delay = delay
+                .saturating_mul(2)
+                .min(tokio::time::Duration::from_secs(2));
+        }
+    }
+
+    log::error!(
+        "{} > {} > No signature status returned before timeout",
+        label,
+        token_address
+    );
+    None
+}
+
 async fn submit_swap_transaction(
     context: &ExecutionContext,
-    swap_tx: &Transaction,
-) -> Result<Signature, solana_client::client_error::ClientError> {
+    swap_tx: &VersionedTransaction,
+) -> Result<Signature, String> {
+    if let (Some(client), Some(plan)) = (&context.sof_tx_client, &context.sof_tx_plan) {
+        let tx_bytes = bincode::serialize(swap_tx)
+            .map_err(|error| format!("failed to serialize transaction for SOF-TX: {error}"))?;
+        let mut client = client.lock().await;
+        client
+            .submit_signed_via(SignedTx::VersionedTransactionBytes(tx_bytes), plan.clone())
+            .await
+            .map_err(|error| format!("SOF-TX submit failed: {error}"))?;
+        return Ok(swap_tx.signatures.first().copied().unwrap_or_default());
+    }
+
     let send_config = RpcSendTransactionConfig {
         skip_preflight: true,
         encoding: Some(UiTransactionEncoding::Base58),
@@ -493,84 +433,29 @@ async fn submit_swap_transaction(
         return context
             .rpc
             .send_transaction_with_config(swap_tx, send_config)
-            .await;
+            .await
+            .map_err(|error| error.to_string());
     }
 
     let jito_rpc = RpcClient::new(context.jito_url.as_ref().clone());
     jito_rpc
         .send_transaction_with_config(swap_tx, send_config)
         .await
+        .map_err(|error| error.to_string())
 }
 
-async fn fetch_transaction_with_retries(
-    rpc: &RpcClient,
-    signature: &Signature,
-    label: &str,
-) -> Option<EncodedConfirmedTransactionWithStatusMeta> {
-    let mut retries = 0_usize;
-
-    loop {
-        match rpc
-            .get_transaction_with_config(
-                signature,
-                RpcTransactionConfig {
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    max_supported_transaction_version: Some(0),
-                    encoding: Some(UiTransactionEncoding::JsonParsed),
-                },
-            )
-            .await
-        {
-            Ok(tx) => return Some(tx),
-            Err(error) => {
-                if !error.to_string().contains("invalid type: null") {
-                    log::error!("{} > Error getting transaction: {}", label, error);
-                } else {
-                    log::debug!("{} > Error getting transaction: {}", label, error);
-                }
-
-                retries = retries.saturating_add(1);
-                if retries >= MAX_RETRIES {
-                    log::error!(
-                        "{} > Max retries reached in transaction. Exiting loop.",
-                        label
-                    );
-                    return None;
-                }
-
-                tokio::time::sleep(tokio::time::Duration::from_millis(1_000)).await;
-            }
-        }
-    }
-}
-
-fn extract_program_accounts(
-    tx: &EncodedConfirmedTransactionWithStatusMeta,
-    program_id: &str,
-) -> Option<Vec<String>> {
-    let EncodedTransaction::Json(json_tx) = &tx.transaction.transaction else {
-        return None;
-    };
-
-    let UiMessage::Parsed(message) = &json_tx.message else {
-        return None;
-    };
-
-    for instruction in &message.instructions {
-        let UiInstruction::Parsed(parsed_instruction) = instruction else {
-            continue;
-        };
-
-        let UiParsedInstruction::PartiallyDecoded(decoded_instruction) = parsed_instruction else {
-            continue;
-        };
-
-        if decoded_instruction.program_id == program_id {
-            return Some(decoded_instruction.accounts.clone());
-        }
-    }
-
-    None
+fn build_swap_transaction(
+    context: &ExecutionContext,
+    instructions: Vec<Instruction>,
+    blockhash: solana_sdk::hash::Hash,
+) -> Result<VersionedTransaction, String> {
+    let signer_refs: [&dyn Signer; 1] = [context.keypair.as_ref()];
+    TxBuilder::new(context.keypair.pubkey())
+        .with_compute_unit_limit(120_000)
+        .with_priority_fee_micro_lamports(context.priority_fees)
+        .add_instructions(instructions)
+        .build_and_sign(blockhash.to_bytes(), &signer_refs)
+        .map_err(|error| format!("failed to build/sign swap transaction: {error}"))
 }
 
 #[inline(always)]

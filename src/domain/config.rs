@@ -6,45 +6,164 @@ use thiserror::Error;
 pub struct SniperConfigFile {
     pub runtime: RuntimeConfigSection,
     #[serde(default)]
+    pub sof: SofConfigSection,
+    #[serde(default)]
+    pub sof_tx: SofTxConfigSection,
+    #[serde(default)]
     pub telemetry: TelemetryConfigSection,
     #[serde(default)]
     pub rules: Vec<RuleConfigEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfigSection {
     pub keypair_path: String,
     pub rpc_url: String,
     pub wss_url: String,
     pub priority_fees: u64,
+    #[serde(default)]
+    pub dry_run: bool,
     #[serde(default = "default_tx_submission_mode")]
     pub tx_submission_mode: String,
     #[serde(default)]
     pub jito_url: Option<String>,
-    #[serde(default = "default_kernel_tcp_bypass")]
-    pub kernel_tcp_bypass: bool,
-    #[serde(default = "default_kernel_tcp_bypass_engine")]
-    pub kernel_tcp_bypass_engine: String,
-    #[serde(default = "default_kernel_bypass_socket_path")]
-    pub kernel_bypass_socket_path: String,
-    #[serde(default)]
-    pub fpga_enabled: bool,
-    #[serde(default)]
-    pub fpga_verbose: bool,
-    #[serde(default = "default_fpga_vendor")]
-    pub fpga_vendor: String,
-    #[serde(default = "default_fpga_ingress_mode")]
-    pub fpga_ingress_mode: String,
-    #[serde(default = "default_fpga_direct_device_path")]
-    pub fpga_direct_device_path: String,
-    #[serde(default = "default_fpga_dma_socket_path")]
-    pub fpga_dma_socket_path: String,
     #[serde(default)]
     pub replay_benchmark: bool,
     #[serde(default = "default_replay_event_count")]
     pub replay_event_count: usize,
     #[serde(default = "default_replay_burst_size")]
     pub replay_burst_size: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SofConfigSection {
+    #[serde(default = "default_sof_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sof_source")]
+    pub source: String,
+    #[serde(default)]
+    pub websocket_url: Option<String>,
+    #[serde(default)]
+    pub grpc_url: Option<String>,
+    #[serde(default)]
+    pub grpc_x_token: Option<String>,
+    #[serde(default)]
+    pub private_shred_socket_path: Option<String>,
+    #[serde(default = "default_sof_private_shred_source_addr")]
+    pub private_shred_source_addr: String,
+    #[serde(default)]
+    pub trusted_private_shreds: bool,
+    #[serde(default)]
+    pub gossip_entrypoints: Vec<String>,
+    #[serde(default)]
+    pub gossip_validators: Vec<String>,
+    #[serde(default = "default_sof_gossip_runtime_mode")]
+    pub gossip_runtime_mode: String,
+    #[serde(default = "default_sof_commitment")]
+    pub commitment: String,
+    #[serde(default = "default_sof_inline_transaction_dispatch")]
+    pub inline_transaction_dispatch: bool,
+    #[serde(default)]
+    pub startup_step_logs: bool,
+    #[serde(default)]
+    pub worker_threads: Option<usize>,
+    #[serde(default)]
+    pub dataset_workers: Option<usize>,
+    #[serde(default)]
+    pub packet_workers: Option<usize>,
+    #[serde(default)]
+    pub ingest_queue_mode: Option<String>,
+    #[serde(default)]
+    pub ingest_queue_capacity: Option<usize>,
+}
+
+impl Default for SofConfigSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_sof_enabled(),
+            source: default_sof_source(),
+            websocket_url: None,
+            grpc_url: None,
+            grpc_x_token: None,
+            private_shred_socket_path: None,
+            private_shred_source_addr: default_sof_private_shred_source_addr(),
+            trusted_private_shreds: false,
+            gossip_entrypoints: Vec::new(),
+            gossip_validators: Vec::new(),
+            gossip_runtime_mode: default_sof_gossip_runtime_mode(),
+            commitment: default_sof_commitment(),
+            inline_transaction_dispatch: default_sof_inline_transaction_dispatch(),
+            startup_step_logs: false,
+            worker_threads: None,
+            dataset_workers: None,
+            packet_workers: None,
+            ingest_queue_mode: None,
+            ingest_queue_capacity: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SofTxConfigSection {
+    #[serde(default = "default_sof_tx_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_sof_tx_mode")]
+    pub mode: String,
+    #[serde(default = "default_sof_tx_strategy")]
+    pub strategy: String,
+    #[serde(default)]
+    pub routes: Vec<String>,
+    #[serde(default = "default_sof_tx_reliability")]
+    pub reliability: String,
+    #[serde(default = "default_sof_tx_jito_transport")]
+    pub jito_transport: String,
+    #[serde(default)]
+    pub jito_endpoint: Option<String>,
+    #[serde(default = "default_sof_tx_bundle_only")]
+    pub bundle_only: bool,
+    #[serde(default = "default_sof_tx_routing_next_leaders")]
+    pub routing_next_leaders: usize,
+    #[serde(default = "default_sof_tx_routing_backup_validators")]
+    pub routing_backup_validators: usize,
+    #[serde(default = "default_sof_tx_routing_max_parallel_sends")]
+    pub routing_max_parallel_sends: usize,
+    #[serde(default = "default_sof_tx_guard_require_stable_control_plane")]
+    pub guard_require_stable_control_plane: bool,
+    #[serde(default = "default_sof_tx_guard_reject_on_replay_recovery_pending")]
+    pub guard_reject_on_replay_recovery_pending: bool,
+    #[serde(default = "default_sof_tx_guard_max_state_version_drift")]
+    pub guard_max_state_version_drift: u64,
+    #[serde(default = "default_sof_tx_guard_max_opportunity_age_ms")]
+    pub guard_max_opportunity_age_ms: u64,
+    #[serde(default = "default_sof_tx_guard_suppression_ttl_ms")]
+    pub guard_suppression_ttl_ms: u64,
+}
+
+impl Default for SofTxConfigSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_sof_tx_enabled(),
+            mode: default_sof_tx_mode(),
+            strategy: default_sof_tx_strategy(),
+            routes: Vec::new(),
+            reliability: default_sof_tx_reliability(),
+            jito_transport: default_sof_tx_jito_transport(),
+            jito_endpoint: None,
+            bundle_only: default_sof_tx_bundle_only(),
+            routing_next_leaders: default_sof_tx_routing_next_leaders(),
+            routing_backup_validators: default_sof_tx_routing_backup_validators(),
+            routing_max_parallel_sends: default_sof_tx_routing_max_parallel_sends(),
+            guard_require_stable_control_plane: default_sof_tx_guard_require_stable_control_plane(),
+            guard_reject_on_replay_recovery_pending:
+                default_sof_tx_guard_reject_on_replay_recovery_pending(),
+            guard_max_state_version_drift: default_sof_tx_guard_max_state_version_drift(),
+            guard_max_opportunity_age_ms: default_sof_tx_guard_max_opportunity_age_ms(),
+            guard_suppression_ttl_ms: default_sof_tx_guard_suppression_ttl_ms(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -55,6 +174,7 @@ pub enum RuleKind {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleConfigEntry {
     pub kind: RuleKind,
     pub address: String,
@@ -64,6 +184,7 @@ pub struct RuleConfigEntry {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfigSection {
     #[serde(default = "default_telemetry_enabled")]
     pub enabled: bool,
@@ -119,32 +240,84 @@ fn default_tx_submission_mode() -> String {
     "jito".to_owned()
 }
 
-const fn default_kernel_tcp_bypass() -> bool {
+const fn default_sof_enabled() -> bool {
     true
 }
 
-fn default_kernel_tcp_bypass_engine() -> String {
-    "af_xdp_or_dpdk_external".to_owned()
+fn default_sof_source() -> String {
+    "websocket".to_owned()
 }
 
-fn default_kernel_bypass_socket_path() -> String {
-    "/tmp/slotstrike-kernel-bypass.sock".to_owned()
+fn default_sof_private_shred_source_addr() -> String {
+    "127.0.0.1:8899".to_owned()
 }
 
-fn default_fpga_vendor() -> String {
-    "generic".to_owned()
+fn default_sof_commitment() -> String {
+    "processed".to_owned()
 }
 
-fn default_fpga_ingress_mode() -> String {
-    "auto".to_owned()
+fn default_sof_gossip_runtime_mode() -> String {
+    "control_plane_only".to_owned()
 }
 
-fn default_fpga_direct_device_path() -> String {
-    "/dev/slotstrike-fpga0".to_owned()
+const fn default_sof_inline_transaction_dispatch() -> bool {
+    true
 }
 
-fn default_fpga_dma_socket_path() -> String {
-    "/tmp/slotstrike-fpga-dma.sock".to_owned()
+const fn default_sof_tx_enabled() -> bool {
+    true
+}
+
+fn default_sof_tx_mode() -> String {
+    "jito".to_owned()
+}
+
+fn default_sof_tx_strategy() -> String {
+    "ordered_fallback".to_owned()
+}
+
+fn default_sof_tx_reliability() -> String {
+    "balanced".to_owned()
+}
+
+fn default_sof_tx_jito_transport() -> String {
+    "json_rpc".to_owned()
+}
+
+const fn default_sof_tx_bundle_only() -> bool {
+    true
+}
+
+const fn default_sof_tx_routing_next_leaders() -> usize {
+    2
+}
+
+const fn default_sof_tx_routing_backup_validators() -> usize {
+    1
+}
+
+const fn default_sof_tx_routing_max_parallel_sends() -> usize {
+    4
+}
+
+const fn default_sof_tx_guard_require_stable_control_plane() -> bool {
+    true
+}
+
+const fn default_sof_tx_guard_reject_on_replay_recovery_pending() -> bool {
+    true
+}
+
+const fn default_sof_tx_guard_max_state_version_drift() -> u64 {
+    4
+}
+
+const fn default_sof_tx_guard_max_opportunity_age_ms() -> u64 {
+    750
+}
+
+const fn default_sof_tx_guard_suppression_ttl_ms() -> u64 {
+    750
 }
 
 const fn default_replay_event_count() -> usize {
@@ -184,13 +357,9 @@ keypair_path = "keypair.json"
 rpc_url = "https://rpc.example"
 wss_url = "wss://wss.example"
 priority_fees = 1000
+dry_run = true
 tx_submission_mode = "direct"
 jito_url = "https://jito.example"
-kernel_tcp_bypass = false
-kernel_tcp_bypass_engine = "af_xdp"
-fpga_enabled = false
-fpga_verbose = false
-fpga_vendor = "generic"
 replay_benchmark = false
 replay_event_count = 50000
 replay_burst_size = 512
@@ -213,6 +382,7 @@ slippage_pct = "1"
         assert!(config.is_ok());
         if let Ok(config) = config {
             assert_eq!(config.runtime.priority_fees, 1_000);
+            assert!(config.runtime.dry_run);
             assert!(config.telemetry.enabled);
             assert_eq!(config.telemetry.sample_capacity, 1_024);
             assert_eq!(config.rules.len(), 1);
@@ -232,11 +402,6 @@ rpc_url = "https://rpc.example"
 wss_url = "wss://wss.example"
 priority_fees = 1000
 tx_submission_mode = "direct"
-kernel_tcp_bypass = false
-kernel_tcp_bypass_engine = "af_xdp"
-fpga_enabled = false
-fpga_verbose = false
-fpga_vendor = "generic"
 replay_benchmark = false
 replay_event_count = 50000
 replay_burst_size = 512
@@ -245,7 +410,28 @@ replay_burst_size = 512
 
         assert!(config.is_ok());
         if let Ok(config) = config {
+            assert!(!config.runtime.dry_run);
             assert!(config.telemetry.enabled);
         }
+    }
+
+    #[test]
+    fn rejects_legacy_runtime_fields() {
+        let config = parse_sniper_config_toml(
+            r#"
+[runtime]
+keypair_path = "keypair.json"
+rpc_url = "https://rpc.example"
+wss_url = "wss://wss.example"
+priority_fees = 1000
+tx_submission_mode = "direct"
+kernel_tcp_bypass = true
+replay_benchmark = false
+replay_event_count = 50000
+replay_burst_size = 512
+"#,
+        );
+
+        assert!(config.is_err());
     }
 }

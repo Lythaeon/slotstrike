@@ -6,11 +6,16 @@ all-features = true
 
 [advisories]
 ignore = [
-    # Legacy Solana CLI transitive dependencies with no safe upgrade path in current Solana stack.
-    "RUSTSEC-2021-0139", # ansi_term unmaintained
-    "RUSTSEC-2021-0145", # atty unsound on windows
-    "RUSTSEC-2024-0375", # atty unmaintained
+    "RUSTSEC-2021-0139", # ansi_term unmaintained via clap2 in sof-solana-gossip
+    "RUSTSEC-2021-0145", # atty unsound via clap2 in sof-solana-gossip
+    "RUSTSEC-2022-0093", # ed25519-dalek vulnerability via sof-solana-gossip / solana-runtime
+    "RUSTSEC-2024-0344", # curve25519-dalek vulnerability via sof-solana-gossip / solana-runtime
+    "RUSTSEC-2024-0375", # atty unmaintained via clap2 in sof-solana-gossip
     "RUSTSEC-2025-0141", # bincode unmaintained
+    "RUSTSEC-2024-0384", # instant unmaintained
+    "RUSTSEC-2024-0388", # derivative unmaintained
+    "RUSTSEC-2024-0436", # paste unmaintained
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained
 ]
 
 [licenses]

@@ -1,21 +1,26 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use solana_sdk::transaction::VersionedTransaction;
 
 const HARDWARE_TIMESTAMP_MAX_SKEW_NS: u64 = 5_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngressSource {
-    FpgaDma,
-    KernelBypass,
-    StandardTcp,
+    Websocket,
+    Grpc,
+    PrivateShred,
 }
 
 impl IngressSource {
     #[inline(always)]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::FpgaDma => "fpga_dma",
-            Self::KernelBypass => "kernel_bypass",
-            Self::StandardTcp => "standard_tcp",
+            Self::Websocket => "sof_websocket",
+            Self::Grpc => "sof_grpc",
+            Self::PrivateShred => "sof_private_shred",
         }
     }
 }
@@ -52,12 +57,32 @@ impl IngressMetadata {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RaydiumCandidateKind {
+    Cpmm,
+    OpenBook,
+}
+
+impl RaydiumCandidateKind {
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpmm => "cpmm",
+            Self::OpenBook => "openbook",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct RawLogEvent {
-    pub signature: String,
-    pub logs: Vec<String>,
-    pub has_error: bool,
+pub struct RaydiumCandidateEvent {
+    pub kind: RaydiumCandidateKind,
+    pub transaction: Arc<VersionedTransaction>,
     pub ingress: IngressMetadata,
+}
+
+#[derive(Clone, Debug)]
+pub enum SniperInputEvent {
+    RaydiumCandidate(RaydiumCandidateEvent),
 }
 
 #[inline(always)]
@@ -119,9 +144,9 @@ mod tests {
     #[test]
     fn builds_receive_clock_metadata() {
         let receive_ns = unix_timestamp_now_ns();
-        let metadata = IngressMetadata::from_receive_clock(IngressSource::StandardTcp, receive_ns);
+        let metadata = IngressMetadata::from_receive_clock(IngressSource::Websocket, receive_ns);
 
-        assert_eq!(metadata.source, IngressSource::StandardTcp);
+        assert_eq!(metadata.source, IngressSource::Websocket);
         assert_eq!(metadata.hardware_timestamp_ns, None);
         assert_eq!(metadata.normalized_timestamp_ns, receive_ns);
     }

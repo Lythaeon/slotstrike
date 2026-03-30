@@ -1,14 +1,14 @@
 use std::time::Instant;
 
-use crate::{
-    adapters::raydium::{RAYDIUM_STANDARD_AMM_PROGRAM_ID, RAYDIUM_V4_PROGRAM_ID},
-    domain::events::{
-        IngressMetadata, IngressSource, RawLogEvent, normalize_hardware_timestamp_ns,
-        unix_timestamp_now_ns,
-    },
+use solana_sdk::{message::compiled_instruction::CompiledInstruction, pubkey::Pubkey};
+
+use crate::adapters::raydium::{
+    RAYDIUM_STANDARD_AMM_PROGRAM_ID, RAYDIUM_V4_INITIALIZE2_TAG, RAYDIUM_V4_PROGRAM_ID,
+    RAYDIUM_V4_SWAP_BASE_IN_TAG, STANDARD_AMM_INITIALIZE, STANDARD_AMM_SWAP_BASE_INPUT,
+    classify_raydium_creation_instructions,
 };
 
-use super::pool_filter::{is_pool_creation_candidate_logs, is_pool_creation_dma_payload};
+const MIN_EVENTS_PER_PATH: usize = 1_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayPathStats {
@@ -26,152 +26,160 @@ pub struct ReplayPathStats {
 pub struct ReplayBenchmarkReport {
     pub event_count: usize,
     pub burst_size: usize,
-    pub fpga_path: ReplayPathStats,
-    pub kernel_bypass_path: ReplayPathStats,
+    pub scan_repeats: usize,
+    pub sof_creation_path: ReplayPathStats,
+    pub sof_swap_path: ReplayPathStats,
 }
 
 pub fn run_synthetic_replay(event_count: usize, burst_size: usize) -> ReplayBenchmarkReport {
     let total_events = event_count.max(1);
     let burst = burst_size.max(1);
-    let synthetic = build_synthetic_dataset(total_events);
-
-    let fpga_path = benchmark_fpga_path(&synthetic, burst);
-    let kernel_bypass_path = benchmark_kernel_path(&synthetic, burst);
+    let scan_repeats = repeats_for(total_events);
+    let structured_creation_events =
+        build_structured_dataset(total_events, ReplayWorkload::PoolCreation);
+    let structured_swap_events = build_structured_dataset(total_events, ReplayWorkload::SwapFlow);
+    let sof_creation_path = benchmark_structured_path(
+        "sof_structured_creation_scan",
+        &structured_creation_events,
+        burst,
+        scan_repeats,
+    );
+    let sof_swap_path = benchmark_structured_path(
+        "sof_structured_swap_scan",
+        &structured_swap_events,
+        burst,
+        scan_repeats,
+    );
 
     ReplayBenchmarkReport {
         event_count: total_events,
         burst_size: burst,
-        fpga_path,
-        kernel_bypass_path,
+        scan_repeats,
+        sof_creation_path,
+        sof_swap_path,
     }
 }
 
 pub fn log_replay_report(report: &ReplayBenchmarkReport) {
     log::info!(
-        "Replay benchmark > events={} burst={}",
+        "Replay benchmark > events={} burst={} repeats={}",
         report.event_count,
-        report.burst_size
+        report.burst_size,
+        report.scan_repeats
     );
-    log::info!(
-        "Replay benchmark > path={} candidates={} throughput={}ev/s p50={}ns p99={}ns max={}ns",
-        report.fpga_path.path,
-        report.fpga_path.candidate_events,
-        report.fpga_path.throughput_events_per_sec,
-        report.fpga_path.p50_ns,
-        report.fpga_path.p99_ns,
-        report.fpga_path.max_ns
-    );
-    log::info!(
-        "Replay benchmark > path={} candidates={} throughput={}ev/s p50={}ns p99={}ns max={}ns",
-        report.kernel_bypass_path.path,
-        report.kernel_bypass_path.candidate_events,
-        report.kernel_bypass_path.throughput_events_per_sec,
-        report.kernel_bypass_path.p50_ns,
-        report.kernel_bypass_path.p99_ns,
-        report.kernel_bypass_path.max_ns
-    );
+
+    for path in [&report.sof_creation_path, &report.sof_swap_path] {
+        log::info!(
+            "Replay benchmark > path={} candidates={} throughput={}ev/s p50={}ns p99={}ns max={}ns",
+            path.path,
+            path.candidate_events,
+            path.throughput_events_per_sec,
+            path.p50_ns,
+            path.p99_ns,
+            path.max_ns
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplayWorkload {
+    PoolCreation,
+    SwapFlow,
 }
 
 #[derive(Clone, Debug)]
-struct SyntheticEvent {
-    kernel_event: RawLogEvent,
-    dma_payload: Vec<u8>,
+struct StructuredSyntheticEvent {
+    account_keys: Vec<Pubkey>,
+    instructions: Vec<CompiledInstruction>,
 }
 
-fn build_synthetic_dataset(total_events: usize) -> Vec<SyntheticEvent> {
+fn repeats_for(total_events: usize) -> usize {
+    let bounded_total_events = total_events.max(1);
+    MIN_EVENTS_PER_PATH.div_ceil(bounded_total_events)
+}
+
+fn build_structured_dataset(
+    total_events: usize,
+    workload: ReplayWorkload,
+) -> Vec<StructuredSyntheticEvent> {
+    let cpmm_program = Pubkey::from_str_const(RAYDIUM_STANDARD_AMM_PROGRAM_ID);
+    let openbook_program = Pubkey::from_str_const(RAYDIUM_V4_PROGRAM_ID);
+    let filler_accounts = [
+        Pubkey::new_from_array([1_u8; 32]),
+        Pubkey::new_from_array([2_u8; 32]),
+        Pubkey::new_from_array([3_u8; 32]),
+    ];
+
     let mut dataset = Vec::with_capacity(total_events);
     for index in 0..total_events {
-        let signature = format!("synthetic_sig_{index}");
-        let logs = synthetic_logs(index);
-        let payload = synthetic_dma_payload(&signature, &logs);
-        let receive_timestamp_ns = unix_timestamp_now_ns();
-        let normalized_timestamp_ns = normalize_hardware_timestamp_ns(None, receive_timestamp_ns);
-
-        dataset.push(SyntheticEvent {
-            kernel_event: RawLogEvent {
-                signature,
-                logs,
-                has_error: false,
-                ingress: IngressMetadata {
-                    source: IngressSource::KernelBypass,
-                    hardware_timestamp_ns: None,
-                    received_timestamp_ns: receive_timestamp_ns,
-                    normalized_timestamp_ns,
-                },
-            },
-            dma_payload: payload,
+        let mut account_keys = Vec::with_capacity(4);
+        let instructions = if index.is_multiple_of(2) {
+            account_keys.push(cpmm_program);
+            vec![CompiledInstruction::new_from_raw_parts(
+                0,
+                structured_instruction_data(workload, false),
+                vec![],
+            )]
+        } else {
+            account_keys.push(openbook_program);
+            vec![CompiledInstruction::new_from_raw_parts(
+                0,
+                structured_instruction_data(workload, true),
+                vec![],
+            )]
+        };
+        account_keys.extend_from_slice(&filler_accounts);
+        dataset.push(StructuredSyntheticEvent {
+            account_keys,
+            instructions,
         });
     }
     dataset
 }
 
-fn synthetic_logs(index: usize) -> Vec<String> {
-    let is_openbook = index.is_multiple_of(2);
-    if is_openbook {
-        vec![
-            format!("Program {} invoke [1]", RAYDIUM_V4_PROGRAM_ID),
-            "Program log: initialize2".to_owned(),
-        ]
-    } else {
-        vec![
-            format!("Program {} invoke [1]", RAYDIUM_STANDARD_AMM_PROGRAM_ID),
-            "Program log: vault_0_amount:1234, vault_1_amount:5678".to_owned(),
-        ]
+fn structured_instruction_data(workload: ReplayWorkload, is_openbook: bool) -> Vec<u8> {
+    match (workload, is_openbook) {
+        (ReplayWorkload::PoolCreation, true) => vec![RAYDIUM_V4_INITIALIZE2_TAG],
+        (ReplayWorkload::PoolCreation, false) => STANDARD_AMM_INITIALIZE.to_vec(),
+        (ReplayWorkload::SwapFlow, true) => vec![RAYDIUM_V4_SWAP_BASE_IN_TAG],
+        (ReplayWorkload::SwapFlow, false) => STANDARD_AMM_SWAP_BASE_INPUT.to_vec(),
     }
 }
 
-fn synthetic_dma_payload(signature: &str, logs: &[String]) -> Vec<u8> {
-    let mut payload = format!("signature={signature}\nhas_error=0\n");
-    for log_line in logs {
-        payload.push_str("log=");
-        payload.push_str(log_line);
-        payload.push('\n');
-    }
-    payload.into_bytes()
-}
-
-fn benchmark_fpga_path(events: &[SyntheticEvent], burst_size: usize) -> ReplayPathStats {
+fn benchmark_structured_path(
+    path: &'static str,
+    events: &[StructuredSyntheticEvent],
+    burst_size: usize,
+    repeats: usize,
+) -> ReplayPathStats {
+    let cpmm_program = Pubkey::from_str_const(RAYDIUM_STANDARD_AMM_PROGRAM_ID);
+    let openbook_program = Pubkey::from_str_const(RAYDIUM_V4_PROGRAM_ID);
     let started_at = Instant::now();
     let mut candidate_count = 0_usize;
-    let mut per_event_ns = Vec::with_capacity(events.len());
+    let mut per_event_ns = Vec::with_capacity(events.len().saturating_mul(repeats));
 
-    for chunk in events.chunks(burst_size) {
-        for synthetic in chunk {
-            let event_start = Instant::now();
-            if is_pool_creation_dma_payload(&synthetic.dma_payload) {
-                candidate_count = candidate_count.saturating_add(1);
+    for _ in 0..repeats {
+        for chunk in events.chunks(burst_size) {
+            for synthetic in chunk {
+                let event_start = Instant::now();
+                if classify_raydium_creation_instructions(
+                    &synthetic.account_keys,
+                    &synthetic.instructions,
+                    cpmm_program,
+                    openbook_program,
+                )
+                .is_some()
+                {
+                    candidate_count = candidate_count.saturating_add(1);
+                }
+                per_event_ns.push(elapsed_ns_u64(event_start.elapsed()));
             }
-            per_event_ns.push(elapsed_ns_u64(event_start.elapsed()));
         }
     }
 
     build_replay_path_stats(
-        "fpga_dma",
-        events.len(),
-        candidate_count,
-        elapsed_ns_u64(started_at.elapsed()),
-        &per_event_ns,
-    )
-}
-
-fn benchmark_kernel_path(events: &[SyntheticEvent], burst_size: usize) -> ReplayPathStats {
-    let started_at = Instant::now();
-    let mut candidate_count = 0_usize;
-    let mut per_event_ns = Vec::with_capacity(events.len());
-
-    for chunk in events.chunks(burst_size) {
-        for synthetic in chunk {
-            let event_start = Instant::now();
-            if is_pool_creation_candidate_logs(&synthetic.kernel_event.logs) {
-                candidate_count = candidate_count.saturating_add(1);
-            }
-            per_event_ns.push(elapsed_ns_u64(event_start.elapsed()));
-        }
-    }
-
-    build_replay_path_stats(
-        "kernel_bypass",
-        events.len(),
+        path,
+        events.len().saturating_mul(repeats),
         candidate_count,
         elapsed_ns_u64(started_at.elapsed()),
         &per_event_ns,
@@ -247,9 +255,10 @@ mod tests {
 
         assert_eq!(report.event_count, 256);
         assert_eq!(report.burst_size, 32);
-        assert_eq!(report.fpga_path.total_events, 256);
-        assert_eq!(report.kernel_bypass_path.total_events, 256);
-        assert!(report.fpga_path.candidate_events > 0);
-        assert!(report.kernel_bypass_path.candidate_events > 0);
+        assert!(report.scan_repeats > 0);
+        assert_eq!(report.sof_creation_path.total_events, 1_000_192);
+        assert_eq!(report.sof_swap_path.total_events, 1_000_192);
+        assert!(report.sof_creation_path.candidate_events > 0);
+        assert_eq!(report.sof_swap_path.candidate_events, 0);
     }
 }
